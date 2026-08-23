@@ -1841,3 +1841,239 @@ select.tcgb-cond {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+
+/* ============ Mobile refactor (1.23): narrow layout + touch targets ============ */
+
+/* --- Choice control: a button that reads like a select, opening a native
+   menu (bottom sheet on mobile) instead of focusing an input in view-content. */
+.tcgb-choice {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	font-size: var(--font-ui-small);
+	max-width: 14em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tcgb-choice-chevron {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+/* --- Chips: tooltip-borne meaning made visible for touch. */
+.tcgb-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	font-size: var(--font-ui-smaller);
+	padding: 1px var(--size-2-2);
+	border-radius: var(--radius-s);
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.tcgb-chip-warn {
+	color: var(--color-orange);
+	border-color: rgba(var(--color-orange-rgb, 233, 151, 63), 0.4);
+	background: rgba(var(--color-orange-rgb, 233, 151, 63), 0.1);
+}
+
+.tcgb-chip-ok {
+	color: var(--color-green);
+	border-color: rgba(var(--color-green-rgb), 0.4);
+	background: rgba(var(--color-green-rgb), 0.1);
+}
+
+button.tcgb-chip {
+	cursor: pointer;
+}
+
+.tcgb-filter-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-2-2);
+	margin-bottom: var(--size-4-2);
+}
+
+/* --- Filters disclosure (narrow): five dropdowns collapse behind one line. */
+.tcgb-disclosure {
+	flex-basis: 100%;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: var(--size-2-2) var(--size-2-3);
+	background: var(--background-secondary);
+}
+
+.tcgb-disclosure-summary {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	list-style: none;
+}
+
+.tcgb-disclosure-summary::before {
+	content: '▸';
+	color: var(--text-faint);
+	transition: transform 150ms ease-out;
+}
+
+.tcgb-disclosure[open] .tcgb-disclosure-summary::before {
+	transform: rotate(90deg);
+}
+
+.tcgb-disclosure-body {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-2-2);
+	padding-top: var(--size-4-2);
+}
+
+/* --- Stacked rows (narrow): the collection table as two-line cards. */
+.tcgb-stack-row {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+	padding: var(--size-2-3) var(--size-2-2);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tcgb-stack-primary {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.tcgb-stack-primary .tcgb-card-link {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tcgb-stack-secondary {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: var(--size-2-2);
+	/* Line 2 aligns under the text, past the thumbnail column. */
+	padding-left: calc(34px + var(--size-4-2));
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.tcgb-stack-set {
+	white-space: nowrap;
+}
+
+.tcgb-stack-price {
+	margin-left: auto;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-normal);
+}
+
+.tcgb-stack-more {
+	opacity: 1;
+}
+
+/* --- Narrow layout restructuring, keyed on the JS-applied root class. */
+.tcgb-narrow .tcgb-summary {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--size-2-3);
+}
+
+.tcgb-narrow .tcgb-summary .tcgb-stat {
+	min-width: 0;
+}
+
+/* Covered dashboard rows: the half-width diagonal banner leaves no room for
+   the name on a phone — the cover becomes a square thumbnail on the left. */
+.tcgb-narrow .tcgb-list-row-covered {
+	min-height: 0;
+	padding-left: calc(56px + var(--size-4-3));
+}
+
+.tcgb-narrow .tcgb-list-cover {
+	width: 56px;
+	clip-path: none;
+	border-radius: calc(var(--radius-m) - 1px) 0 0 calc(var(--radius-m) - 1px);
+}
+
+/* Deck/search/missing rows: let the tail wrap to a second line instead of
+   ellipsizing the card name to a letter. */
+.tcgb-narrow .tcgb-deck-row {
+	flex-wrap: wrap;
+}
+
+.tcgb-narrow .tcgb-deck-row .tcgb-card-link {
+	flex-basis: 8em;
+}
+
+.tcgb-narrow .tcgb-acq-actions {
+	flex-basis: 100%;
+	justify-content: flex-end;
+	overflow-x: auto;
+}
+
+/* Set progress: name on its own line, the bar gets the full width. */
+.tcgb-narrow .tcgb-set-row {
+	flex-wrap: wrap;
+}
+
+.tcgb-narrow .tcgb-set-name {
+	flex-basis: 100%;
+}
+
+/* Dashboard list rows: name gets its own full-width line (same fix the
+   two-column grid already had ≥601px, now for phones too). */
+.tcgb-narrow .tcgb-list-row {
+	flex-wrap: wrap;
+}
+
+.tcgb-narrow .tcgb-list-name {
+	flex-basis: 100%;
+}
+
+/* Purchases rows breathe on narrow: deck + receive drop to line two. */
+.tcgb-narrow .tcgb-purchase-row .tcgb-purchase-deck {
+	margin-left: calc(34px + var(--size-4-2));
+}
+
+/* --- Touch targets: 44px minimum wherever a finger has to land. */
+.tcgb-touch .tcgb-btn,
+.tcgb-touch .tcgb-back,
+.tcgb-touch .tcgb-row-action,
+.tcgb-touch .tcgb-qty-btn,
+.tcgb-touch .tcgb-remove,
+.tcgb-touch .tcgb-choice,
+.tcgb-touch .tcgb-tile-remove,
+.tcgb-touch .tcgb-detail-nav {
+	min-height: 44px;
+	min-width: 44px;
+}
+
+.tcgb-touch .tcgb-qty-btn,
+.tcgb-touch .tcgb-row-action,
+.tcgb-touch .tcgb-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Hover-only affordances are always visible on touch (zoom preview has no
+   touch equivalent — tapping opens the detail modal instead). */
+.tcgb-touch .tcgb-thumb:hover {
+	transform: none;
+}
+
+.tcgb-chart {
+	touch-action: pan-y;
+}

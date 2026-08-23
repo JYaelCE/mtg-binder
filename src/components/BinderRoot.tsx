@@ -11,6 +11,7 @@ import { t } from '../i18n'
 import { useVaultVersion } from '../hooks/useVaultVersion'
 import { useAllocation } from '../hooks/useAllocation'
 import { PurchasesSection } from './PurchasesSection'
+import { layoutClasses, useLayoutMode } from '../hooks/useLayoutMode'
 import { CollectionView } from './CollectionView'
 import { DeckView } from './DeckView'
 import { PortfolioChart } from './PortfolioChart'
@@ -121,6 +122,7 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 		},
 	})
 	const cardIndex = useMemo(() => plugin.cardNotes.buildIndex(), [plugin, version])
+	const layoutMode = useLayoutMode()
 
 	/** One allocation snapshot for the whole dashboard (missing counts, held copies, warnings). */
 	const allocation = useAllocation(plugin, cardIndex, version)
@@ -219,7 +221,7 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 	}
 
 	return (
-		<div className="tcgb-root">
+		<div className={`tcgb-root${layoutClasses(layoutMode)}`}>
 			<div className="tcgb-dashboard-header">
 				<h2 className="tcgb-title">{t('view.title')}</h2>
 				<button
@@ -462,13 +464,19 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 											{t('status.building')}
 										</span>
 									)}
-									{missing > 0 && (
-										<span
-											className="tcgb-list-missing-dot"
-											title={t('root.deck-missing', { count: missing })}
-											aria-label={t('root.deck-missing', { count: missing })}
-										/>
-									)}
+									{missing > 0 &&
+										(layoutMode.coarse ? (
+											// A hover tooltip is unreachable on touch — say the number.
+											<span className="tcgb-chip tcgb-chip-warn">
+												{t('chip.missing', { count: missing })}
+											</span>
+										) : (
+											<span
+												className="tcgb-list-missing-dot"
+												title={t('root.deck-missing', { count: missing })}
+												aria-label={t('root.deck-missing', { count: missing })}
+											/>
+										))}
 									<span className={`tcgb-list-meta ${total === 60 ? 'tcgb-list-meta-ok' : ''}`}>
 										{total}/60
 									</span>

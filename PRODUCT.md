@@ -75,7 +75,7 @@ O alicerce de tudo: sem busca de cartas não existe coleção nem deck.
 
 O TCG Binder está publicado na community store do Obsidian. Roadmap v1 concluído; próximas ideias entram como issues no GitHub.
 
-### Pós-lançamento — entregas até 1.22.0 (2026-08)
+### Pós-lançamento — entregas até 1.23.0 (2026-08)
 
 Notas completas por versão em `docs/release-notes/`. Destaques desde o lançamento:
 
@@ -100,6 +100,7 @@ Notas completas por versão em `docs/release-notes/`. Destaques desde o lançame
 - [x] **1.18.0** — **rastreador de compras** (🛒 "compradas, a caminho" por impressão; número grande vira o para-comprar, linha 100% comprada esmaece, custo/wishlist ignoram compradas, chegada via + baixa o contador; badges "2/4" de cobertura por linha e tile "A caminho"); **status de deck em 3 estados** (Montado/Montando/Lista com selos no dashboard, promoção automática Lista→Montando por atividade de compra, import nasce Lista); **renomear coleção/deck pela UI** (✎ no header, wikilinks preservados)
 - [x] **1.19.0** — **compras com origem**: o modal 🛒 virou lista de compras (uma linha por vendedor: qty + onde/de quem), exibida na lista de faltantes ("4 a caminho (2 Liga · 1 João · 1 OLX)"); chegada via + baixa da compra mais antiga; frontmatter migra `ordered`/`ordered-from` → lista `orders` automaticamente
 - [x] **1.20.0** — **reordenar o dashboard por drag-and-drop** (coleções e decks, lista e grade; posição persistida como `sort-order` no frontmatter, vale em todas as listagens do plugin; desktop-only por usar drag nativo)
+- [x] **1.23.0** — **refatoração mobile** (impeccable/adapt): tabela da coleção vira linhas empilhadas em telas estreitas, filtros em disclosure + chips, toolbar do deck com overflow ⋯, menus nativos (bottom sheet) no lugar de todos os selects no toque, chips no lugar de tooltips, alvos de 44px, swipe no detalhe da carta, gráfico por toque, capas viram thumbnail no dashboard estreito
 - [x] **1.22.0** — **fluxo de aquisição completo**: "Recebi" por compra (parcial; entra na coleção com preço pago, deck segura, consome aquela compra), "Já tenho" (aloca do pool livre ou cadastra), compras com preço/cópia + data, coluna "Pago" na coleção, seção **Compras a caminho** no dashboard (todas as compras de todos os decks, com Recebi/Cancelar e totais), wishlist sincronizada (= "ainda a comprar")
 - [x] **1.21.0** — **modelo de alocação explícito** (`domain/allocation.ts` puro e testado: posse vive nas coleções, deck só segura o que está alocado a ele, pool livre compartilhado; fim da subtração mútua entre decks); ações **Montar da coleção** / **Desmontar** / **Montar todos** (prioridade = ordem do dashboard); setting "Reservar cartas usadas em decks" removido com migração automática; restaurar revisão preserva `allocated`/`orders`; aviso de sobre-alocação no dashboard
 

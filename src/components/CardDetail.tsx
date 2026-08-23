@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { Notice } from 'obsidian'
 import { t } from '../i18n'
 import type { CardDetails } from '../services/card-data/card-data-source'
@@ -59,6 +60,23 @@ export function CardDetail({ plugin, metas, startIndex, registerNavigate, onOpen
 		registerNavigate(navigate)
 	}, [registerNavigate, navigate])
 
+	// Touch has no arrow keys: swiping the card body flips prev/next. A
+	// mostly-vertical drag is a scroll, not a swipe — leave it alone.
+	const swipeStart = useRef<{ x: number; y: number } | null>(null)
+	const onSwipeStart = (e: ReactPointerEvent<HTMLDivElement>) => {
+		if (e.pointerType === 'mouse') return
+		swipeStart.current = { x: e.clientX, y: e.clientY }
+	}
+	const onSwipeEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+		const start = swipeStart.current
+		swipeStart.current = null
+		if (!start) return
+		const dx = e.clientX - start.x
+		const dy = e.clientY - start.y
+		if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return
+		navigate(dx < 0 ? 1 : -1)
+	}
+
 	// Preload neighbor scans so arrow navigation feels instant.
 	useEffect(() => {
 		for (const neighbor of [index - 1, index + 1]) {
@@ -114,7 +132,7 @@ export function CardDetail({ plugin, metas, startIndex, registerNavigate, onOpen
 					‹
 				</button>
 
-				<div className="tcgb-detail-body">
+				<div className="tcgb-detail-body" onPointerDown={onSwipeStart} onPointerUp={onSwipeEnd}>
 					<div className="tcgb-detail-imgcol">
 						{image ? (
 							<img className="tcgb-detail-img" src={image} alt={meta.name} />

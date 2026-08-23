@@ -87,6 +87,12 @@ tests/
 - O setting `reserveDeckCopies` foi removido; `migrateAllocationModel` (main.ts, `onLayoutReady`) roda 1x guiado por `settings.allocationModelVersion`.
 - `Σ orders ≤ qty − allocated` por linha de deck (invariante gravada pelo DeckStore); `setEntries` (restore de revisão) preserva `allocated`/`orders` clampados.
 
+### Arquitetura mobile (1.23.0)
+
+- `useLayoutMode()` (`hooks/useLayoutMode.ts`): **narrow** (≤600px ou `Platform.isMobile`) decide LAYOUT (linhas empilhadas, disclosure de filtros, toolbar com ⋯); **coarse** (`pointer: coarse` ou mobile) decide INTERAÇÃO (menu nativo no lugar de `<select>`, chips no lugar de tooltips, alvos 44px). As classes `tcgb-narrow`/`tcgb-touch` são aplicadas na raiz de cada view via `layoutClasses()` — o CSS narrow/touch fica no fim do styles.css.
+- **Nunca usar `<select>`/inputs novos dentro de view-content em superfícies touch** — usar `ChoiceControl` (select no desktop, botão+`Menu` nativo no toque; `Menu` vira bottom sheet no mobile, `utils/choice-menu.ts`). Overflow de toolbar = `showActionMenu`.
+- Tooltip (`title=`) nunca pode ser o único portador de informação — no toque vira chip (`.tcgb-chip*`).
+
 ### Gotchas do Obsidian descobertos neste projeto
 
 - **Bundle stale mascara qualquer correção** (perdemos um ciclo inteiro de debug nisso, 2026-07-23): copiar `main.js` para o vault NÃO recarrega o plugin — o Obsidian mantém o código antigo em memória até `Ctrl+R`/restart. O arquivo `.hotreload` só funciona com o plugin **Hot Reload instalado** (agora está no vault development). Diagnóstico rápido: `console.debug` de versão+fonte no `onload` (aparece com console em Verbose); ids de carta no formato errado (`me5-25` sem zero-pad = pokemontcg.io; `me5-025` = TCGdex) também denunciam qual build/fonte rodou.

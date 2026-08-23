@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { MouseEvent } from 'react'
+import type { PointerEvent } from 'react'
 import { t } from '../i18n'
 import type { PortfolioSnapshot } from '../services/portfolio-history'
 import type TcgBinderPlugin from '../main'
@@ -63,7 +63,7 @@ export function PortfolioChart({ plugin, refresh }: PortfolioChartProps) {
 	const gridYs = [PAD.top, PAD.top + (H - PAD.top - PAD.bottom) / 2, H - PAD.bottom]
 	const gridValues = [vMax, (vMax + vMin) / 2, vMin]
 
-	const onMove = (e: MouseEvent<SVGSVGElement>) => {
+	const onMove = (e: PointerEvent<SVGSVGElement>) => {
 		const rect = e.currentTarget.getBoundingClientRect()
 		const x = ((e.clientX - rect.left) / rect.width) * W
 		let nearest = 0
@@ -82,8 +82,9 @@ export function PortfolioChart({ plugin, refresh }: PortfolioChartProps) {
 					viewBox={`0 0 ${W} ${H}`}
 					role="img"
 					aria-label={t('chart.title')}
-					onMouseMove={onMove}
-					onMouseLeave={() => setHover(null)}
+					onPointerMove={onMove}
+					onPointerDown={onMove}
+					onPointerLeave={() => setHover(null)}
 				>
 					{gridYs.map((y, i) => (
 						<g key={i}>

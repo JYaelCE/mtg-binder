@@ -12,8 +12,10 @@ import { useAllocation } from '../hooks/useAllocation'
 import { analyzeDeck } from '../domain/allocation'
 import type { DeckLineAvailability } from '../domain/allocation'
 import { OrderedQtyModal } from '../modals/ordered-qty-modal'
-import type { DeckStatus, DeckStoredEntry } from '../services/deck-store'
-import type { DeckFormat } from '../types'
+import { ChoiceControl } from './ChoiceControl'
+import { layoutClasses, useLayoutMode } from '../hooks/useLayoutMode'
+import { showActionMenu } from '../utils/choice-menu'
+import type { DeckStoredEntry } from '../services/deck-store'
 import { CardDetailModal } from '../modals/card-detail-modal'
 import type TcgBinderPlugin from '../main'
 
@@ -43,6 +45,7 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 	const format = plugin.decks.readFormat(file)
 	const status = plugin.decks.readStatus(file)
 	const [mode, setMode] = useState<ViewMode>(plugin.settings.defaultViewMode)
+	const layout = useLayoutMode()
 
 	const cardIndex = useMemo(() => plugin.cardNotes.buildIndex(), [plugin, version])
 
@@ -249,8 +252,30 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 		return <span className="tcgb-deck-missing-note">{parts.join(' · ')}</span>
 	}
 
+	/** Secondary toolbar actions — inline on desktop, behind ⋯ on narrow surfaces. */
+	const overflowActions = () => [
+		{ label: t('deck.export'), icon: 'clipboard-copy', onClick: () => void plugin.exportDeck(file) },
+		{ label: t('deck.to-collections'), icon: 'library', onClick: () => void plugin.addDeckToCollections(file) },
+		{ label: t('deck.revisions'), icon: 'history', onClick: () => plugin.openDeckRevisions(file) },
+		{
+			label: t('view.toggle-mode'),
+			icon: 'layout-grid',
+			onClick: () => setMode((m) => (m === 'list' ? 'grid' : 'list')),
+		},
+		...(summary && summary.allocated > 0
+			? [
+					{
+						label: t('deck.disassemble'),
+						icon: 'undo-2',
+						danger: true,
+						onClick: () => plugin.confirmDisassembleDeck(file),
+					},
+				]
+			: []),
+	]
+
 	return (
-		<div className="tcgb-root">
+		<div className={`tcgb-root${layoutClasses(layout)}`}>
 			<div className="tcgb-view-header">
 				<button className="tcgb-back" onClick={onBack}>
 					← {t('view.back')}
@@ -267,24 +292,28 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 			</div>
 
 			<div className="tcgb-deck-toolbar">
-				<select
+				<ChoiceControl
 					value={format}
-					onChange={(e) => void plugin.decks.setFormat(file, e.target.value as DeckFormat)}
-				>
-					<option value="standard">{t('format.standard')}</option>
-					<option value="expanded">{t('format.expanded')}</option>
-					<option value="unlimited">{t('format.unlimited')}</option>
-				</select>
-				<select
+					coarse={layout.coarse}
+					ariaLabel={t('deck.format')}
+					options={[
+						{ value: 'standard', label: t('format.standard') },
+						{ value: 'expanded', label: t('format.expanded') },
+						{ value: 'unlimited', label: t('format.unlimited') },
+					]}
+					onChange={(value) => void plugin.decks.setFormat(file, value)}
+				/>
+				<ChoiceControl
 					value={status}
-					title={t('deck.status-hint')}
-					aria-label={t('deck.status-hint')}
-					onChange={(e) => void plugin.changeDeckStatus(file, e.target.value as DeckStatus)}
-				>
-					<option value="assembled">{t('status.assembled')}</option>
-					<option value="building">{t('status.building')}</option>
-					<option value="list">{t('status.list')}</option>
-				</select>
+					coarse={layout.coarse}
+					ariaLabel={t('deck.status-hint')}
+					options={[
+						{ value: 'assembled', label: t('status.assembled') },
+						{ value: 'building', label: t('status.building') },
+						{ value: 'list', label: t('status.list') },
+					]}
+					onChange={(value) => void plugin.changeDeckStatus(file, value)}
+				/>
 				<button className="tcgb-btn tcgb-btn-cta" onClick={() => plugin.runAddToDeckLoop([file])}>
 					{t('deck.add-cards')}
 				</button>
@@ -306,37 +335,61 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 						{t('deck.disassemble')}
 					</button>
 				)}
-				<button className="tcgb-btn" onClick={() => void plugin.exportDeck(file)}>
-					{t('deck.export')}
-				</button>
-				<button
-					className="tcgb-btn"
-					title={t('deck.to-collections-hint')}
-					onClick={() => void plugin.addDeckToCollections(file)}
-				>
-					{t('deck.to-collections')}
-				</button>
-				<button className="tcgb-btn" onClick={() => plugin.openDeckRevisions(file)}>
-					{t('deck.revisions')}
-				</button>
-				<button
-					className="tcgb-btn tcgb-mode-toggle"
-					title={t('view.toggle-mode')}
-					aria-label={t('view.toggle-mode')}
-					onClick={() => setMode((m) => (m === 'list' ? 'grid' : 'list'))}
-				>
-					{mode === 'list' ? '▦' : '≣'}
-				</button>
-				<button
-					className="tcgb-btn tcgb-mode-toggle"
-					title={t('cover.set')}
-					aria-label={t('cover.set')}
-					onClick={(event) => {
-						openCoverMenu(event.nativeEvent)
-					}}
-				>
-					🖼
-				</button>
+				{layout.narrow ? (
+					<button
+						className="tcgb-btn tcgb-toolbar-overflow"
+						aria-label={t('mobile.more')}
+						aria-haspopup="menu"
+						onClick={(e) => {
+							showActionMenu({ x: e.clientX, y: e.clientY }, [
+								...overflowActions(),
+								{
+									label: t('cover.set'),
+									icon: 'image',
+									onClick: () => {
+										openCoverMenu(e.nativeEvent)
+									},
+								},
+							])
+						}}
+					>
+						⋯
+					</button>
+				) : (
+					<>
+						<button className="tcgb-btn" onClick={() => void plugin.exportDeck(file)}>
+							{t('deck.export')}
+						</button>
+						<button
+							className="tcgb-btn"
+							title={t('deck.to-collections-hint')}
+							onClick={() => void plugin.addDeckToCollections(file)}
+						>
+							{t('deck.to-collections')}
+						</button>
+						<button className="tcgb-btn" onClick={() => plugin.openDeckRevisions(file)}>
+							{t('deck.revisions')}
+						</button>
+						<button
+							className="tcgb-btn tcgb-mode-toggle"
+							title={t('view.toggle-mode')}
+							aria-label={t('view.toggle-mode')}
+							onClick={() => setMode((m) => (m === 'list' ? 'grid' : 'list'))}
+						>
+							{mode === 'list' ? '▦' : '≣'}
+						</button>
+						<button
+							className="tcgb-btn tcgb-mode-toggle"
+							title={t('cover.set')}
+							aria-label={t('cover.set')}
+							onClick={(event) => {
+								openCoverMenu(event.nativeEvent)
+							}}
+						>
+							🖼
+						</button>
+					</>
+				)}
 			</div>
 
 			<div className="tcgb-summary">

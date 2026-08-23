@@ -14,6 +14,9 @@ import type { SetInfo } from '../services/card-data/card-data-source'
 import type { CardMeta } from '../services/card-notes'
 import type { StoredEntry } from '../services/collection-store'
 import { FilePickerModal } from '../modals/file-picker-modal'
+import { ChoiceControl } from './ChoiceControl'
+import { layoutClasses, useLayoutMode } from '../hooks/useLayoutMode'
+import { showActionMenu, showChoiceMenu } from '../utils/choice-menu'
 import { CardDetailModal } from '../modals/card-detail-modal'
 import type TcgBinderPlugin from '../main'
 
@@ -44,6 +47,7 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 	const [dateFilter, setDateFilter] = useState(ALL)
 	const [sortMode, setSortMode] = useState<'default' | 'newest' | 'oldest'>('default')
 	const [search, setSearch] = useState('')
+	const layout = useLayoutMode()
 
 	useEffect(() => {
 		let cancelled = false
@@ -263,8 +267,170 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 		})()
 	}
 
+	const setOptions = [
+		{ value: ALL, label: t('view.filter.all-sets') },
+		...rowSets.map((s) => ({ value: s.id, label: s.name })),
+	]
+	const variantOptions = [
+		{ value: ALL, label: t('view.filter.all-variants') },
+		...variants.map((v) => ({ value: v, label: t(`variant.${v}`) })),
+	]
+	const conditionOptions = [
+		{ value: ALL, label: t('view.filter.all-conditions') },
+		...conditions.map((c) => ({ value: c, label: c })),
+	]
+	const dateOptions = [
+		{ value: ALL, label: t('view.filter.any-date') },
+		{ value: '7', label: t('view.filter.last-days-7') },
+		{ value: '30', label: t('view.filter.last-days-30') },
+		{ value: '90', label: t('view.filter.last-days-90') },
+	]
+	const sortOptions = [
+		{ value: 'default', label: t('view.sort.default') },
+		{ value: 'newest', label: t('view.sort.newest') },
+		{ value: 'oldest', label: t('view.sort.oldest') },
+	]
+
+	/** Active filters, as chip data — what the collapsed disclosure summarizes. */
+	const activeFilters: { label: string; clear: () => void }[] = [
+		...(setFilter !== ALL
+			? [{ label: setOptions.find((o) => o.value === setFilter)?.label ?? setFilter, clear: () => setSetFilter(ALL) }]
+			: []),
+		...(variantFilter !== ALL
+			? [{ label: t(`variant.${variantFilter as CardVariant}`), clear: () => setVariantFilter(ALL) }]
+			: []),
+		...(conditionFilter !== ALL ? [{ label: conditionFilter, clear: () => setConditionFilter(ALL) }] : []),
+		...(dateFilter !== ALL
+			? [{ label: dateOptions.find((o) => o.value === dateFilter)?.label ?? dateFilter, clear: () => setDateFilter(ALL) }]
+			: []),
+		...(sortMode !== 'default'
+			? [{ label: sortOptions.find((o) => o.value === sortMode)?.label ?? sortMode, clear: () => setSortMode('default') }]
+			: []),
+	]
+
+	const filterControls = (
+		<>
+			<ChoiceControl value={setFilter} coarse={layout.coarse} ariaLabel={t('view.filter.all-sets')} options={setOptions} onChange={setSetFilter} />
+			<ChoiceControl value={variantFilter} coarse={layout.coarse} ariaLabel={t('view.filter.all-variants')} options={variantOptions} onChange={setVariantFilter} />
+			<ChoiceControl value={conditionFilter} coarse={layout.coarse} ariaLabel={t('view.filter.all-conditions')} options={conditionOptions} onChange={setConditionFilter} />
+			<ChoiceControl value={dateFilter} coarse={layout.coarse} ariaLabel={t('view.filter.added')} options={dateOptions} onChange={setDateFilter} />
+			<ChoiceControl
+				value={sortMode}
+				coarse={layout.coarse}
+				ariaLabel={t('view.sort')}
+				options={sortOptions}
+				onChange={(value) => setSortMode(value as 'default' | 'newest' | 'oldest')}
+			/>
+		</>
+	)
+
+	/** Row actions behind one ⋯ on touch — four hover icons don't fit a phone row. */
+	const rowActionMenu = (row: Row, anchor: { x: number; y: number }) => {
+		showActionMenu(anchor, [
+			...(isWishlist && row.meta
+				? [{ label: t('acq.received'), icon: 'check', onClick: () => acquire(row) }]
+				: []),
+			{ label: t('view.move'), icon: 'corner-up-right', onClick: () => moveToCollection(row) },
+			{ label: t('view.add-variant'), icon: 'copy-plus', onClick: () => addVariantLine(row) },
+			{
+				label: t('view.remove'),
+				icon: 'trash-2',
+				danger: true,
+				onClick: () =>
+					void plugin.collections.removeEntry(file, {
+						id: row.id,
+						variant: row.variant,
+						condition: row.condition,
+					}),
+			},
+		])
+	}
+
+	/** Narrow layout: the 11-column table becomes stacked two-line rows. */
+	const stackedRows = (
+		<div className="tcgb-stack-list">
+			{filtered.map((row) => (
+				<div key={`${row.id}-${row.variant}-${row.condition}`} className="tcgb-stack-row">
+					<div className="tcgb-stack-primary">
+						{row.meta?.image ? (
+							<img className="tcgb-thumb" loading="lazy" src={row.meta.image} alt="" />
+						) : (
+							<div className="tcgb-thumb tcgb-thumb-empty" />
+						)}
+						<a className="tcgb-card-link" onClick={() => openCard(row)}>
+							{row.meta?.name ?? row.id}
+						</a>
+						<span className="tcgb-qty">
+							<button className="tcgb-qty-btn" onClick={() => changeQty(row, -1)}>
+								−
+							</button>
+							<span className="tcgb-qty-value">{row.qty}</span>
+							<button className="tcgb-qty-btn" onClick={() => changeQty(row, 1)}>
+								+
+							</button>
+						</span>
+						<button
+							className="tcgb-row-action tcgb-stack-more"
+							aria-label={t('mobile.actions')}
+							aria-haspopup="menu"
+							onClick={(e) => rowActionMenu(row, { x: e.clientX, y: e.clientY })}
+						>
+							⋯
+						</button>
+					</div>
+					<div className="tcgb-stack-secondary">
+						<span className="tcgb-stack-set">
+							{[row.meta?.setCode ?? row.meta?.setName, row.meta?.number ? `#${row.meta.number}` : null]
+								.filter(Boolean)
+								.join(' ')}
+						</span>
+						<button
+							className="tcgb-chip"
+							aria-haspopup="menu"
+							onClick={(e) =>
+								showChoiceMenu(
+									{ x: e.clientX, y: e.clientY },
+									CARD_VARIANTS.map((variant) => ({ value: variant, label: t(`variant.${variant}`) })),
+									row.variant,
+									(variant) => rekey(row, variant, row.condition),
+								)
+							}
+						>
+							{t(`variant.${row.variant}`)}
+						</button>
+						<button
+							className={`tcgb-chip tcgb-cond tcgb-cond-${row.condition}`}
+							aria-haspopup="menu"
+							onClick={(e) =>
+								showChoiceMenu(
+									{ x: e.clientX, y: e.clientY },
+									CARD_CONDITIONS.map((condition) => ({ value: condition, label: condition })),
+									row.condition,
+									(condition) => rekey(row, row.variant, condition),
+								)
+							}
+						>
+							{row.condition}
+						</button>
+						{(copiesByKey.get(keyOf(row)) ?? 0) >= 4 && (
+							<span className="tcgb-chip tcgb-chip-ok">{t('view.col.playset')}</span>
+						)}
+						{row.meta?.priceMarket !== null && row.meta?.priceMarket !== undefined && (
+							<span className="tcgb-stack-price">${(row.qty * row.meta.priceMarket).toFixed(2)}</span>
+						)}
+						{isWishlist && row.meta && (
+							<button className="tcgb-btn tcgb-acq-receive" onClick={() => acquire(row)}>
+								{t('acq.received')}
+							</button>
+						)}
+					</div>
+				</div>
+			))}
+		</div>
+	)
+
 	return (
-		<div className="tcgb-root">
+		<div className={`tcgb-root${layoutClasses(layout)}`}>
 			<div className="tcgb-view-header">
 				<button className="tcgb-back" onClick={onBack}>
 					← {t('view.back')}
@@ -303,49 +469,19 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 					value={search}
 					onChange={(e) => setSearch(e.target.value)}
 				/>
-				<select value={setFilter} onChange={(e) => setSetFilter(e.target.value)}>
-					<option value={ALL}>{t('view.filter.all-sets')}</option>
-					{rowSets.map((s) => (
-						<option key={s.id} value={s.id}>
-							{s.name}
-						</option>
-					))}
-				</select>
-				<select value={variantFilter} onChange={(e) => setVariantFilter(e.target.value)}>
-					<option value={ALL}>{t('view.filter.all-variants')}</option>
-					{variants.map((v) => (
-						<option key={v} value={v}>
-							{t(`variant.${v}`)}
-						</option>
-					))}
-				</select>
-				<select value={conditionFilter} onChange={(e) => setConditionFilter(e.target.value)}>
-					<option value={ALL}>{t('view.filter.all-conditions')}</option>
-					{conditions.map((c) => (
-						<option key={c} value={c}>
-							{c}
-						</option>
-					))}
-				</select>
-				<select
-					value={dateFilter}
-					aria-label={t('view.filter.added')}
-					onChange={(e) => setDateFilter(e.target.value)}
-				>
-					<option value={ALL}>{t('view.filter.any-date')}</option>
-					<option value="7">{t('view.filter.last-days-7')}</option>
-					<option value="30">{t('view.filter.last-days-30')}</option>
-					<option value="90">{t('view.filter.last-days-90')}</option>
-				</select>
-				<select
-					value={sortMode}
-					aria-label={t('view.sort')}
-					onChange={(e) => setSortMode(e.target.value as 'default' | 'newest' | 'oldest')}
-				>
-					<option value="default">{t('view.sort.default')}</option>
-					<option value="newest">{t('view.sort.newest')}</option>
-					<option value="oldest">{t('view.sort.oldest')}</option>
-				</select>
+				{layout.narrow ? (
+					<details className="tcgb-disclosure">
+						<summary className="tcgb-disclosure-summary">
+							{t('mobile.filters')}
+							{activeFilters.length > 0 && (
+								<span className="tcgb-count-pill">{activeFilters.length}</span>
+							)}
+						</summary>
+						<div className="tcgb-disclosure-body">{filterControls}</div>
+					</details>
+				) : (
+					filterControls
+				)}
 				<button
 					className="tcgb-btn tcgb-mode-toggle"
 					title={t('view.toggle-mode')}
@@ -370,6 +506,16 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 					</button>
 				)}
 			</div>
+
+			{layout.narrow && activeFilters.length > 0 && (
+				<div className="tcgb-filter-chips">
+					{activeFilters.map((chip) => (
+						<button key={chip.label} className="tcgb-chip tcgb-chip-clear" onClick={chip.clear}>
+							{chip.label} ×
+						</button>
+					))}
+				</div>
+			)}
 
 			{filtered.length === 0 ? (
 				<p className="tcgb-empty">{t('view.no-entries')}</p>
@@ -437,6 +583,8 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 						</div>
 					))}
 				</div>
+			) : layout.narrow ? (
+				stackedRows
 			) : (
 				<div className="tcgb-table-wrap">
 					<table className="tcgb-table">
