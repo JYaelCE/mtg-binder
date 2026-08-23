@@ -221,6 +221,12 @@
 	color: var(--color-green);
 }
 
+/* Marked assembled but no longer holding every copy — softer, amber-ish. */
+.tcgb-list-assembled-partial {
+	color: var(--color-orange);
+	opacity: 0.9;
+}
+
 /* The state the user tracks: actively hunting this deck's cards */
 .tcgb-list-building {
 	color: var(--color-orange);
@@ -667,6 +673,16 @@ select.tcgb-cond {
 	color: var(--text-normal);
 	background: rgba(var(--color-red-rgb), 0.06);
 	border: 1px solid rgba(var(--color-red-rgb), 0.25);
+}
+
+/* Decks holding more copies than the collections have (over-allocation). */
+.tcgb-panel-warn {
+	color: var(--text-normal);
+	background: rgba(var(--color-orange-rgb, 233, 151, 63), 0.08);
+	border: 1px solid rgba(var(--color-orange-rgb, 233, 151, 63), 0.35);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-radius: var(--radius-m);
+	font-size: var(--font-ui-small);
 }
 
 .tcgb-panel-title {

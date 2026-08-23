@@ -185,19 +185,15 @@ export function CardDetail({ plugin, metas, startIndex, registerNavigate, onOpen
 
 						{deckUsage.length > 0 && (
 							<div className="tcgb-detail-decks">
-								<span className="tcgb-detail-decks-label">
-									{plugin.settings.reserveDeckCopies
-										? t('detail.reserved-for')
-										: t('detail.in-decks')}
-								</span>
+								<span className="tcgb-detail-decks-label">{t('detail.in-decks')}</span>
 								{deckUsage.map((usage) => (
 									<span
 										key={usage.path}
-										className={`tcgb-detail-badge ${usage.assembled ? '' : 'tcgb-detail-deck-unassembled'}`}
+										className={`tcgb-detail-badge ${usage.allocated > 0 ? '' : 'tcgb-detail-deck-unassembled'}`}
 									>
 										{usage.qty}× {usage.name}
-										{plugin.settings.reserveDeckCopies && !usage.assembled && (
-											<> · {t('detail.deck-unassembled')}</>
+										{usage.allocated > 0 && (
+											<> · {t('detail.holds', { allocated: usage.allocated, qty: usage.qty })}</>
 										)}
 									</span>
 								))}

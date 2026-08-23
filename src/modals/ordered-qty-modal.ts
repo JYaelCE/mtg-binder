@@ -34,7 +34,7 @@ export class OrderedQtyModal extends Modal {
 		new Setting(contentEl)
 			.addButton((btn) => {
 				btn.setButtonText(t('ordered.add')).onClick(() => {
-					this.drafts.push({ qty: 1, from: '' })
+					this.drafts.push({ qty: 1, from: '', price: null, date: null })
 					this.renderList(listEl)
 				})
 			})

@@ -1,77 +1,83 @@
 import type { TFile } from 'obsidian'
 import { functionalKey } from '../domain/text-match'
+import { buildAllocationSnapshot } from '../domain/allocation'
+import type { AllocationDeck, AllocationInput, AllocationSnapshot } from '../domain/allocation'
+import type { DeckStatus } from '../domain/deck-status'
 import type { CardMeta } from './card-notes'
 import type TcgBinderPlugin from '../main'
 
-/** Quantities keyed by functional name (when the card note is known) and by id. */
-export interface QtyMaps {
-	byName: Map<string, number>
-	byId: Map<string, number>
-}
-
-export interface OwnershipMaps {
-	/** Copies in every non-wishlist collection. */
-	inCollections: QtyMaps
-	/** Copies used by OTHER decks ("reserve deck copies" setting; empty when off). */
-	reserved: QtyMaps
-}
-
 /**
- * Ownership is aggregated by card NAME across every collection: in the game,
- * any printing of the same name is functionally the same card, so owning
- * "Switch" from SVI satisfies a deck line for "Switch" from MEG. Falls back
- * to id matching for cards whose note lacks a resolvable name. Owned and
- * reserved stay separate so callers can EXPLAIN the math to the user.
+ * Bridge between the vault (collections/decks as notes) and the pure
+ * allocation model in domain/allocation.ts. Identity is the functional
+ * card name: any printing of "Switch" satisfies a deck line for "Switch".
  */
-export function buildOwnershipMaps(
-	plugin: TcgBinderPlugin,
-	cardIndex: Map<string, CardMeta>,
-	excludeDeckPath: string,
-): OwnershipMaps {
-	const tally = (maps: QtyMaps, id: string, qty: number) => {
-		maps.byId.set(id, (maps.byId.get(id) ?? 0) + qty)
-		const meta = cardIndex.get(id)
-		if (meta) {
-			const key = functionalKey(meta.nameEn, meta.name, id)
-			maps.byName.set(key, (maps.byName.get(key) ?? 0) + qty)
-		}
+
+export function keyFor(cardIndex: Map<string, CardMeta>, id: string): string {
+	const meta = cardIndex.get(id)
+	return functionalKey(meta?.nameEn ?? null, meta?.name ?? null, id)
+}
+
+/** id → functional key for every id the caller will look up. */
+export function keyMapFrom(cardIndex: Map<string, CardMeta>, ids: Iterable<string>): Map<string, string> {
+	const keyOf = new Map<string, string>()
+	for (const id of ids) if (!keyOf.has(id)) keyOf.set(id, keyFor(cardIndex, id))
+	return keyOf
+}
+
+export function toAllocationDeck(plugin: TcgBinderPlugin, deck: TFile): AllocationDeck {
+	return {
+		path: deck.path,
+		name: deck.basename,
+		status: plugin.decks.readStatus(deck),
+		sortOrder: plugin.store.getSortOrder(deck),
+		lines: plugin.decks.readEntries(deck).map((entry) => ({
+			id: entry.id,
+			qty: entry.qty,
+			allocated: entry.allocated,
+			ordered: entry.ordered,
+		})),
 	}
-	const inCollections: QtyMaps = { byName: new Map(), byId: new Map() }
-	const reserved: QtyMaps = { byName: new Map(), byId: new Map() }
+}
+
+/** Reads every non-wishlist collection and every deck into plain data for the domain. */
+export function buildAllocationInput(plugin: TcgBinderPlugin, cardIndex: Map<string, CardMeta>): AllocationInput {
+	const collections: AllocationInput['collections'] = []
+	const ids = new Set<string>()
 	for (const collection of plugin.store.listFiles('collection')) {
 		if (plugin.store.getRole(collection) === 'wishlist') continue
 		for (const entry of plugin.collections.readEntries(collection)) {
-			tally(inCollections, entry.id, entry.qty)
+			collections.push({ id: entry.id, qty: entry.qty })
+			ids.add(entry.id)
 		}
 	}
-	if (plugin.settings.reserveDeckCopies) {
-		for (const deck of plugin.store.listFiles('deck')) {
-			if (deck.path === excludeDeckPath) continue
-			// An assembled deck holds every copy it lists; a deck that is
-			// still a list holds only the copies explicitly bought FOR it
-			// (allocated via its missing-list add button).
-			const assembled = plugin.decks.readAssembled(deck)
-			for (const entry of plugin.decks.readEntries(deck)) {
-				const held = assembled ? entry.qty : entry.allocated
-				if (held > 0) tally(reserved, entry.id, held)
-			}
-		}
-	}
-	return { inCollections, reserved }
+	const decks = plugin.store.listFiles('deck').map((deck) => toAllocationDeck(plugin, deck))
+	for (const deck of decks) for (const line of deck.lines) ids.add(line.id)
+	return { keyOf: keyMapFrom(cardIndex, ids), collections, decks }
+}
+
+export interface AllocationState {
+	input: AllocationInput
+	snapshot: AllocationSnapshot
+}
+
+export function readAllocationState(plugin: TcgBinderPlugin, cardIndex: Map<string, CardMeta>): AllocationState {
+	const input = buildAllocationInput(plugin, cardIndex)
+	return { input, snapshot: buildAllocationSnapshot(input) }
 }
 
 export interface DeckUsage {
 	path: string
 	name: string
+	/** Copies the deck lists. */
 	qty: number
-	/** False when the deck is just a list — it does not reserve copies. */
-	assembled: boolean
+	/** Copies the deck holds. */
+	allocated: number
+	status: DeckStatus
 }
 
 /**
  * The decks that run a card, matched by functional identity (any printing
- * of the same name counts, like the reserve math). Powers the card detail's
- * "reserved for" line.
+ * of the same name counts). Powers the card detail's "in decks" line.
  */
 export function deckUsageFor(plugin: TcgBinderPlugin, card: CardMeta): DeckUsage[] {
 	const cardIndex = plugin.cardNotes.buildIndex()
@@ -79,53 +85,22 @@ export function deckUsageFor(plugin: TcgBinderPlugin, card: CardMeta): DeckUsage
 	const usage: DeckUsage[] = []
 	for (const deck of plugin.store.listFiles('deck')) {
 		let qty = 0
+		let allocated = 0
 		for (const entry of plugin.decks.readEntries(deck)) {
-			const meta = cardIndex.get(entry.id)
-			const entryKey = functionalKey(meta?.nameEn ?? null, meta?.name ?? null, entry.id)
-			if (entryKey === key || entry.id === card.cardId) qty += entry.qty
+			if (keyFor(cardIndex, entry.id) === key || entry.id === card.cardId) {
+				qty += entry.qty
+				allocated += entry.allocated
+			}
 		}
 		if (qty > 0) {
 			usage.push({
 				path: deck.path,
 				name: deck.basename,
 				qty,
-				assembled: plugin.decks.readAssembled(deck),
+				allocated,
+				status: plugin.decks.readStatus(deck),
 			})
 		}
 	}
 	return usage.sort((a, b) => a.name.localeCompare(b.name))
-}
-
-/**
- * How many cards of a deck the collection cannot cover — the same math as
- * the deck view's missing list, reduced to one number for the dashboard.
- */
-export function countMissingCards(
-	plugin: TcgBinderPlugin,
-	deck: TFile,
-	cardIndex: Map<string, CardMeta>,
-): number {
-	const owned = buildOwnershipMaps(plugin, cardIndex, deck.path)
-	// Deck lines of the same name share one owned pool — aggregate first.
-	const needed = new Map<string, { id: string; qty: number; allocated: number }>()
-	for (const entry of plugin.decks.readEntries(deck)) {
-		const meta = cardIndex.get(entry.id)
-		const key = functionalKey(meta?.nameEn ?? null, meta?.name ?? null, entry.id)
-		const current = needed.get(key)
-		if (current) {
-			current.qty += entry.qty
-			current.allocated += entry.allocated
-		} else needed.set(key, { id: entry.id, qty: entry.qty, allocated: entry.allocated })
-	}
-	let missing = 0
-	for (const [key, line] of needed) {
-		const ownedQty = owned.inCollections.byName.get(key) ?? owned.inCollections.byId.get(line.id) ?? 0
-		const reservedQty = owned.reserved.byName.get(key) ?? owned.reserved.byId.get(line.id) ?? 0
-		// Clamp: reserved copies can push availability negative, but a deck
-		// can never miss more copies than it needs. Copies allocated to THIS
-		// deck are guaranteed to it, whatever other decks reserve.
-		const available = Math.max(Math.max(0, ownedQty - reservedQty), line.allocated)
-		missing += Math.max(0, line.qty - available)
-	}
-	return missing
 }

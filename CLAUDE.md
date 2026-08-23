@@ -39,10 +39,14 @@ src/
   context.ts               # AppContext + useApp()
   domain/                  # lógica PURA (sem imports do Obsidian) — é o que se testa
     deck-rules.ts          # DeckRules (data-driven p/ outros jogos), validateDeck()
+    allocation.ts          # modelo de alocação explícito: pool livre, analyzeDeck, planBuild*/planDisassemble
+    deck-status.ts         # DeckStatus (intenção do usuário; alocação é fato)
     collection-stats.ts    # computeCollectionStats()
     card-query.ts          # parseCardQuery: "SVI 45" / "45/198" / nome
   services/
     binder-store.ts        # BinderStore: notas marcadas (collection/deck), roles
+    deck-availability.ts   # adapter vault→domain/allocation (keyMapFrom, readAllocationState)
+    allocation-actions.ts  # buildDeck/buildAllDecks/disassembleDeck (escrevem allocated)
     collection-store.ts    # CollectionStore: entries {id,link,qty,variant,condition}
     deck-store.ts          # DeckStore: entries {id,link,qty} + format
     card-notes.ts          # CardNotes: nota por carta, criada sob demanda + índice
@@ -75,6 +79,13 @@ tests/
 
 - **Nunca usar `vault.getMarkdownFiles()`/`getFiles()`** — o scanner da submissão flagra "Vault Enumeration". Toda listagem passa por `listMarkdownFilesIn(app, rootFolder)` (walk recursivo do TFolder do binder). Consequência de produto: notas gerenciadas (cartas manuais incluídas) precisam viver dentro da pasta do binder.
 - Clipboard: apenas escrita (`writeText`) em ação explícita do usuário (export de deck) — flag "Clipboard Access" é aceitável e justificada na submissão; nunca adicionar leitura de clipboard.
+
+### Modelo de alocação (1.21.0)
+
+- **Posse vive nas coleções; deck só "segura" o que está em `entries[].allocated`.** Pool livre por nome funcional = possuído − Σalocado (todos os decks). NUNCA subtrair a lista de outro deck — a subtração mútua era o bug de produto pré-1.21 (dois decks montados acusavam falta do mesmo playset). Toda conta de faltantes passa por `domain/allocation.ts` (`buildAllocationSnapshot`/`analyzeDeck`) via `services/deck-availability.ts`; não reimplementar.
+- Status do deck é intenção (`assembled|building|list`, `domain/deck-status.ts`); alocação é fato. Mudar para Montado dispara o build; sair de Montado oferece desmontar.
+- O setting `reserveDeckCopies` foi removido; `migrateAllocationModel` (main.ts, `onLayoutReady`) roda 1x guiado por `settings.allocationModelVersion`.
+- `Σ orders ≤ qty − allocated` por linha de deck (invariante gravada pelo DeckStore); `setEntries` (restore de revisão) preserva `allocated`/`orders` clampados.
 
 ### Gotchas do Obsidian descobertos neste projeto
 

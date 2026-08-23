@@ -7,8 +7,10 @@ import { legalitiesByFunctionalName, validateDeck, validateDeckLegality } from '
 import { functionalKey } from '../domain/text-match'
 import type { ViewMode } from '../settings'
 import type { CardMeta } from '../services/card-notes'
-import { buildOwnershipMaps } from '../services/deck-availability'
-import { coverLines } from '../domain/deck-coverage'
+import { keyMapFrom, toAllocationDeck } from '../services/deck-availability'
+import { useAllocation } from '../hooks/useAllocation'
+import { analyzeDeck } from '../domain/allocation'
+import type { DeckLineAvailability } from '../domain/allocation'
 import { OrderedQtyModal } from '../modals/ordered-qty-modal'
 import type { DeckStatus, DeckStoredEntry } from '../services/deck-store'
 import type { DeckFormat } from '../types'
@@ -109,70 +111,31 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 		[rows],
 	)
 
-	const owned = useMemo(
-		() => buildOwnershipMaps(plugin, cardIndex, file.path),
-		[plugin, version, cardIndex, file],
+	const { snapshot } = useAllocation(plugin, cardIndex, version)
+
+	/** What this deck holds / lacks, across every line. */
+	const summary = snapshot.decks.get(file.path)
+
+	/** Per-printing availability: what this deck holds, the free pool, what is missing. */
+	const availability = useMemo(
+		() => analyzeDeck(snapshot, toAllocationDeck(plugin, file), keyMapFrom(cardIndex, rows.map((row) => row.id))),
+		[snapshot, plugin, file, cardIndex, rows],
 	)
 
-	const missing = useMemo(() => {
-		// Deck lines of the same name share one owned pool (any printing
-		// satisfies the deck), so availability is computed per NAME — but the
-		// display keeps one row per PRINTING, or edits to the printing split
-		// look like the list did not update. Owned copies cover the printings
-		// in deck order; what remains is what is actually missing per line.
-		const groups = new Map<string, { allocated: number; rows: Row[] }>()
-		for (const row of rows) {
-			const key = functionalKey(row.meta?.nameEn ?? null, row.meta?.name ?? null, row.id)
-			const group = groups.get(key) ?? { allocated: 0, rows: [] }
-			group.allocated += row.allocated
-			group.rows.push(row)
-			groups.set(key, group)
-		}
-		const result: (Row & {
-			ownedQty: number
-			reservedQty: number
-			allocatedQty: number
-			missingQty: number
-			/** Of the missing copies, already bought and on the way. */
-			orderedQty: number
-			/** What the user still has to BUY: missing minus on-the-way. */
-			toBuyQty: number
-			showNote: boolean
-		})[] = []
-		for (const [key, group] of groups) {
-			const first = group.rows[0]
-			const ownedQty = owned.inCollections.byName.get(key) ?? owned.inCollections.byId.get(first.id) ?? 0
-			const reservedQty = owned.reserved.byName.get(key) ?? owned.reserved.byId.get(first.id) ?? 0
-			// Clamp: reserved copies can push availability negative, but a
-			// deck can never miss more copies than it needs. Copies allocated
-			// to THIS deck are guaranteed to it.
-			const available = Math.max(Math.max(0, ownedQty - reservedQty), group.allocated)
-			const coveredPerLine = coverLines(group.rows, available)
-			let firstMissing = true
-			for (const [i, row] of group.rows.entries()) {
-				const missingQty = row.qty - coveredPerLine[i]
-				if (missingQty === 0) continue
-				const orderedQty = Math.min(row.ordered, missingQty)
-				result.push({
-					...row,
-					ownedQty,
-					reservedQty,
-					allocatedQty: group.allocated,
-					missingQty,
-					orderedQty,
-					toBuyQty: missingQty - orderedQty,
-					// The ownership note is name-level — repeat it once per name.
-					showNote: firstMissing,
-				})
-				firstMissing = false
-			}
-		}
-		return result
-	}, [rows, owned])
+	type MissingRow = Row & DeckLineAvailability
+	const missing = useMemo<MissingRow[]>(() => {
+		const byId = new Map(rows.map((row) => [row.id, row]))
+		return availability
+			.filter((line) => line.missing > 0)
+			.flatMap((line) => {
+				const row = byId.get(line.id)
+				return row ? [{ ...row, ...line }] : []
+			})
+	}, [rows, availability])
 
 	/** Missing lines fully covered by a purchase on the way don't count. */
 	const missingCost = useMemo(
-		() => missing.reduce((sum, row) => sum + row.toBuyQty * (row.meta?.priceMarket ?? 0), 0),
+		() => missing.reduce((sum, row) => sum + row.toBuy * (row.meta?.priceMarket ?? 0), 0),
 		[missing],
 	)
 
@@ -182,7 +145,7 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 	/** Coverage per deck line ("2/4" badges) — derived from the missing math. */
 	const missingByRow = useMemo(() => {
 		const map = new Map<string, { missingQty: number; orderedQty: number }>()
-		for (const row of missing) map.set(row.id, { missingQty: row.missingQty, orderedQty: row.orderedQty })
+		for (const row of missing) map.set(row.id, { missingQty: row.missing, orderedQty: row.ordered })
 		return map
 	}, [missing])
 
@@ -223,8 +186,8 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 		void plugin
 			.addMissingToWishlist(
 				missing
-					.filter((row) => row.toBuyQty > 0)
-					.map((row) => ({ id: row.id, link: row.link, qty: row.toBuyQty })),
+					.filter((row) => row.toBuy > 0)
+					.map((row) => ({ id: row.id, link: row.link, qty: row.toBuy })),
 			)
 			.then((count) => {
 				new Notice(count > 0 ? t('wishlist.added', { count }) : t('wishlist.covered'))
@@ -239,15 +202,15 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 		return (
 			<span
 				className="tcgb-deck-coverage"
-				title={t('deck.coverage-tooltip', { covered, qty: row.qty, ordered: gap.orderedQty })}
+				title={t('deck.coverage-tooltip', { covered, qty: row.qty, held: row.allocated, ordered: gap.orderedQty })}
 			>
 				{covered}/{row.qty}
 			</span>
 		)
 	}
 
-	const editOrdered = (row: (typeof missing)[number]) => {
-		new OrderedQtyModal(app, row.meta?.name ?? row.id, row.orders, row.missingQty, (orders) => {
+	const editOrdered = (row: MissingRow) => {
+		new OrderedQtyModal(app, row.meta?.name ?? row.id, row.orders, row.missing, (orders) => {
 			void (async () => {
 				await plugin.decks.setOrders(file, row.id, orders)
 				// Buying activity IS the "actively hunting cards" signal.
@@ -256,6 +219,29 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 				}
 			})()
 		}).open()
+	}
+
+	/**
+	 * Why copies are missing — once per card name: owned, free and held by
+	 * other decks; then what THIS deck holds and what is on the way (with
+	 * sellers).
+	 */
+	const missingNote = (row: MissingRow) => {
+		const parts: string[] = []
+		if (row.firstOfKey && (row.heldElsewhere > 0 || row.allocated > 0)) {
+			parts.push(t('deck.missing-explain', { owned: row.owned, free: row.free, held: row.heldElsewhere }))
+		}
+		if (row.allocated > 0) parts.push(t('deck.missing-held-here', { allocated: row.allocated }))
+		if (row.ordered > 0) {
+			const sellers = row.orders.some((order) => order.from.length > 0)
+				? ` (${row.orders
+						.map((order) => (order.from.length > 0 ? `${order.qty} ${order.from}` : `${order.qty}×`))
+						.join(' · ')})`
+				: ''
+			parts.push(t('deck.missing-ordered', { ordered: row.ordered }) + sellers)
+		}
+		if (parts.length === 0) return null
+		return <span className="tcgb-deck-missing-note">{parts.join(' · ')}</span>
 	}
 
 	return (
@@ -288,7 +274,7 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 					value={status}
 					title={t('deck.status-hint')}
 					aria-label={t('deck.status-hint')}
-					onChange={(e) => void plugin.decks.setStatus(file, e.target.value as DeckStatus)}
+					onChange={(e) => void plugin.changeDeckStatus(file, e.target.value as DeckStatus)}
 				>
 					<option value="assembled">{t('status.assembled')}</option>
 					<option value="building">{t('status.building')}</option>
@@ -297,6 +283,24 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 				<button className="tcgb-btn tcgb-btn-cta" onClick={() => plugin.runAddToDeckLoop([file])}>
 					{t('deck.add-cards')}
 				</button>
+				{summary && summary.need > 0 && !summary.fullyAllocated && (
+					<button
+						className="tcgb-btn"
+						title={t('deck.build-hint')}
+						onClick={() => void plugin.buildDeckFromCollection(file)}
+					>
+						{t('deck.build')}
+					</button>
+				)}
+				{summary && summary.allocated > 0 && (
+					<button
+						className="tcgb-btn"
+						title={t('deck.disassemble-hint')}
+						onClick={() => plugin.confirmDisassembleDeck(file)}
+					>
+						{t('deck.disassemble')}
+					</button>
+				)}
 				<button className="tcgb-btn" onClick={() => void plugin.exportDeck(file)}>
 					{t('deck.export')}
 				</button>
@@ -338,6 +342,12 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 				<div className="tcgb-stat">
 					<span className="tcgb-stat-value">${totalPrice.toFixed(2)}</span>
 					{t('view.total-value')}
+				</div>
+				<div className="tcgb-stat">
+					<span className="tcgb-stat-value">
+						{summary?.allocated ?? 0}/{total}
+					</span>
+					{t('deck.held-stat')}
 				</div>
 				<div className="tcgb-stat">
 					<span className="tcgb-stat-value">${missingCost.toFixed(2)}</span>
@@ -456,62 +466,34 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 				{missing.length === 0 ? (
 					<p className="tcgb-empty">{t('deck.missing-none')}</p>
 				) : (
-					missing.map((row) => (
-						<div
-							key={row.id}
-							className={`tcgb-deck-row ${
-								row.toBuyQty === 0 && row.orderedQty > 0 ? 'tcgb-missing-ordered-done' : ''
-							}`}
-						>
-							{row.meta?.image ? (
-								<img className="tcgb-thumb" loading="lazy" src={row.meta.image} alt="" />
-							) : (
-								<div className="tcgb-thumb tcgb-thumb-empty" />
-							)}
-							<span className="tcgb-deck-missing-qty">{row.toBuyQty}×</span>
-							<div className="tcgb-deck-missing-name">
-								<a className="tcgb-card-link" onClick={() => openCard(row)}>
-									{row.meta?.name ?? row.id}
-									{row.meta && (row.meta.setCode || row.meta.number) && (
-										<span className="tcgb-deck-missing-set">
-											{' '}
-											{[row.meta.setCode, row.meta.number].filter(Boolean).join(' ')}
-										</span>
-									)}
-								</a>
-								{(row.orderedQty > 0 ||
-									(row.showNote &&
-										((row.ownedQty > 0 && row.reservedQty > 0) || row.allocatedQty > 0))) && (
-									<span className="tcgb-deck-missing-note">
-										{row.showNote &&
-											((row.ownedQty > 0 && row.reservedQty > 0) || row.allocatedQty > 0) && (
-												<>
-													{t('deck.missing-reserved', {
-														owned: row.ownedQty,
-														reserved: row.reservedQty,
-													})}
-													{row.allocatedQty > 0 &&
-														` · ${t('deck.missing-allocated', { allocated: row.allocatedQty })}`}
-													{row.orderedQty > 0 && ' · '}
-												</>
-											)}
-										{row.orderedQty > 0 &&
-											t('deck.missing-ordered', { ordered: row.orderedQty })}
-										{row.orderedQty > 0 &&
-											row.orders.some((order) => order.from.length > 0) &&
-											` (${row.orders
-												.map((order) =>
-													order.from.length > 0
-														? `${order.qty} ${order.from}`
-														: `${order.qty}×`,
-												)
-												.join(' · ')})`}
-									</span>
+						missing.map((row) => (
+							<div
+								key={row.id}
+								className={`tcgb-deck-row ${
+									row.toBuy === 0 && row.ordered > 0 ? 'tcgb-missing-ordered-done' : ''
+								}`}
+							>
+								{row.meta?.image ? (
+									<img className="tcgb-thumb" loading="lazy" src={row.meta.image} alt="" />
+								) : (
+									<div className="tcgb-thumb tcgb-thumb-empty" />
 								)}
-							</div>
+								<span className="tcgb-deck-missing-qty">{row.toBuy}×</span>
+								<div className="tcgb-deck-missing-name">
+									<a className="tcgb-card-link" onClick={() => openCard(row)}>
+										{row.meta?.name ?? row.id}
+										{row.meta && (row.meta.setCode || row.meta.number) && (
+											<span className="tcgb-deck-missing-set">
+												{' '}
+												{[row.meta.setCode, row.meta.number].filter(Boolean).join(' ')}
+											</span>
+										)}
+									</a>
+									{missingNote(row)}
+								</div>
 							<span className="tcgb-deck-row-meta tcgb-cell-num">
 								{row.meta?.priceMarket !== null && row.meta?.priceMarket !== undefined
-									? `$${(row.toBuyQty * row.meta.priceMarket).toFixed(2)}`
+									? `$${(row.toBuy * row.meta.priceMarket).toFixed(2)}`
 									: '—'}
 							</span>
 							<button
@@ -531,7 +513,7 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 									title={t('deck.add-missing')}
 									onClick={() => {
 										const meta = row.meta
-										if (meta) void plugin.openAddOwnedCard(meta, row.link, row.missingQty, file)
+										if (meta) void plugin.openAddOwnedCard(meta, row.link, row.missing, file)
 									}}
 								>
 									+

@@ -9,7 +9,7 @@ import { resolveImageSource } from '../utils/vault'
 import type { StoredEntry } from '../services/collection-store'
 import { t } from '../i18n'
 import { useVaultVersion } from '../hooks/useVaultVersion'
-import { countMissingCards } from '../services/deck-availability'
+import { useAllocation } from '../hooks/useAllocation'
 import { CollectionView } from './CollectionView'
 import { DeckView } from './DeckView'
 import { PortfolioChart } from './PortfolioChart'
@@ -33,6 +33,7 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 	const [chartRefresh, setChartRefresh] = useState(0)
 	const [updatingPrices, setUpdatingPrices] = useState(false)
 	const [fetchingImages, setFetchingImages] = useState(false)
+	const [building, setBuilding] = useState(false)
 
 	/** Trash (not delete) after confirmation — card notes are never touched. */
 	const confirmDelete = (file: TFile, kind: 'collection' | 'deck') => {
@@ -120,11 +121,8 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 	})
 	const cardIndex = useMemo(() => plugin.cardNotes.buildIndex(), [plugin, version])
 
-	/** Missing-card count per deck, for the subtle dashboard indicator. */
-	const deckMissing = useMemo(
-		() => new Map(decks.map((file) => [file.path, countMissingCards(plugin, file, cardIndex)])),
-		[decks, plugin, cardIndex, version],
-	)
+	/** One allocation snapshot for the whole dashboard (missing counts, held copies, warnings). */
+	const { snapshot } = useAllocation(plugin, cardIndex, version)
 
 	const [query, setQuery] = useState('')
 	const searching = query.trim().length > 0
@@ -351,6 +349,29 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 					>
 						{t('images.fetch')}
 					</button>
+					{decks.length > 0 && (
+						<button
+							className="tcgb-btn"
+							disabled={building}
+							title={t('root.build-all-hint')}
+							onClick={() => {
+								setBuilding(true)
+								void plugin.buildAllDecksFromCollection().finally(() => {
+									setBuilding(false)
+								})
+							}}
+						>
+							{t('root.build-all')}
+						</button>
+					)}
+				</div>
+			)}
+
+			{snapshot.overAllocated.length > 0 && (
+				<div className="tcgb-panel tcgb-panel-warn">
+					{t('root.over-allocated', {
+						count: snapshot.overAllocated.reduce((sum, pool) => sum + pool.over, 0),
+					})}
 				</div>
 			)}
 
@@ -393,7 +414,12 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 					{decks.map((file) => {
 						const total = plugin.decks.readEntries(file).reduce((sum, e) => sum + e.qty, 0)
 						const cover = resolveImageSource(app, plugin.store.getCover(file))
-						const missing = deckMissing.get(file.path) ?? 0
+						const summary = snapshot.decks.get(file.path)
+						const missing = summary?.missing ?? 0
+						const status = plugin.decks.readStatus(file)
+						// An assembled deck that no longer holds every copy (cards
+						// removed from the collection, lines added) gets a softer badge.
+						const partial = status === 'assembled' && !(summary?.fullyAllocated ?? false)
 						return (
 							<div key={file.path} {...dragProps('deck', decks, file)}>
 								<button
@@ -409,12 +435,19 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 										/>
 									)}
 									<span className="tcgb-list-name">{file.basename}</span>
-									{plugin.decks.readStatus(file) === 'assembled' && (
-										<span className="tcgb-list-assembled" title={t('deck.status-hint')}>
+									{status === 'assembled' && (
+										<span
+											className={`tcgb-list-assembled ${partial ? 'tcgb-list-assembled-partial' : ''}`}
+											title={
+												partial
+													? t('deck.holds', { allocated: summary?.allocated ?? 0, qty: total })
+													: t('deck.status-hint')
+											}
+										>
 											✓ {t('status.assembled')}
 										</span>
 									)}
-									{plugin.decks.readStatus(file) === 'building' && (
+									{status === 'building' && (
 										<span className="tcgb-list-building" title={t('deck.status-hint')}>
 											{t('status.building')}
 										</span>

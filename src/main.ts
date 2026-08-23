@@ -33,7 +33,10 @@ import type { SetInfo } from './services/card-data/card-data-source'
 import { pokemonTcgIoImageCandidates } from './services/card-data/fallback-images'
 import { urlExists } from './services/card-data/http'
 import { CardListLine, parseCardList, serializeCardList } from './domain/card-list'
-import { functionalKey } from './domain/text-match'
+import { analyzeDeck } from './domain/allocation'
+import type { AllocationDeck } from './domain/allocation'
+import { keyMapFrom, readAllocationState } from './services/deck-availability'
+import { buildAllDecks, buildDeck, disassembleDeck } from './services/allocation-actions'
 import { bucketFor, TypeBucket } from './domain/type-buckets'
 import { parseCsv } from './domain/csv'
 import { CsvCardRow, mapCsvRows } from './domain/csv-import'
@@ -154,6 +157,27 @@ export default class TcgBinderPlugin extends Plugin {
 			},
 		})
 		this.addCommand({
+			id: 'build-deck',
+			name: t('command.build-deck'),
+			callback: () => {
+				this.pickDeck(t('picker.deck-build'), (deck) => void this.buildDeckFromCollection(deck))
+			},
+		})
+		this.addCommand({
+			id: 'build-all-decks',
+			name: t('command.build-all-decks'),
+			callback: () => {
+				void this.buildAllDecksFromCollection()
+			},
+		})
+		this.addCommand({
+			id: 'disassemble-deck',
+			name: t('command.disassemble-deck'),
+			callback: () => {
+				this.pickDeck(t('picker.deck-disassemble'), (deck) => this.confirmDisassembleDeck(deck))
+			},
+		})
+		this.addCommand({
 			id: 'create-set-collection',
 			name: t('command.create-set-collection'),
 			callback: () => {
@@ -205,6 +229,11 @@ export default class TcgBinderPlugin extends Plugin {
 
 		this.addSettingTab(new TcgBinderSettingTab(this.app, this))
 
+		// Frontmatter is only readable once the metadata cache is populated.
+		this.app.workspace.onLayoutReady(() => {
+			void this.migrateAllocationModel()
+		})
+
 		// Version marker — makes stale-bundle situations obvious when debugging.
 		// (console.debug is hidden unless the console is set to Verbose.)
 		console.debug(`[TCG Binder] v${this.manifest.version} loaded — card source: ${this.activeSource().id}`)
@@ -214,9 +243,122 @@ export default class TcgBinderPlugin extends Plugin {
 		// Views, commands and events registered via this.register* are cleaned up by Obsidian.
 	}
 
+	/** Raw `data.json` as loaded — kept for one-time migrations of removed keys. */
+	private loadedData: Record<string, unknown> = {}
+
 	async loadSettings(): Promise<void> {
-		const data = (await this.loadData()) as Partial<TcgBinderSettings> | null
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, data)
+		const data = (await this.loadData()) as Record<string, unknown> | null
+		this.loadedData = data ?? {}
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<TcgBinderSettings> | null)
+	}
+
+	/**
+	 * One-time move to the explicit allocation model (1.21.0). Before, the
+	 * "reserve deck copies" setting made every assembled deck subtract its
+	 * whole list from every other deck. Users who had it ON expected their
+	 * assembled decks to hold their cards — build them, in dashboard order,
+	 * so the result is deterministic. Users who had it OFF keep a free pool
+	 * until they build a deck themselves.
+	 */
+	private async migrateAllocationModel(): Promise<void> {
+		if (this.settings.allocationModelVersion >= 1) return
+		try {
+			if (this.loadedData.reserveDeckCopies === true) {
+				const result = await buildAllDecks(this, (deck) => this.decks.readStatus(deck) === 'assembled')
+				if (result.allocated > 0) {
+					new Notice(t('migration.allocated', { decks: result.decks, allocated: result.allocated }))
+				}
+			}
+			this.settings.allocationModelVersion = 1
+			delete (this.settings as unknown as Record<string, unknown>).reserveDeckCopies
+			await this.saveSettings()
+			console.debug('[TCG Binder] allocation model migrated to v1')
+		} catch (error) {
+			console.error('[TCG Binder] allocation migration failed', error)
+		}
+	}
+
+	private pickDeck(title: string, onPick: (deck: TFile) => void): void {
+		const decks = this.store.listFiles('deck')
+		if (decks.length === 0) {
+			new Notice(t('notice.no-decks'))
+			return
+		}
+		if (decks.length === 1) {
+			onPick(decks[0])
+			return
+		}
+		new FilePickerModal(this.app, decks, title, onPick).open()
+	}
+
+	/** "Build from collection": the deck takes every free copy it can use. */
+	async buildDeckFromCollection(deck: TFile): Promise<void> {
+		try {
+			const result = await buildDeck(this, deck)
+			const name = deck.basename
+			if (result.missing === 0) new Notice(t('deck.build-done', { name }))
+			else if (result.allocated === 0) new Notice(t('deck.build-nothing', { name }))
+			else new Notice(t('deck.build-partial', { name, held: result.held, need: result.need, missing: result.missing }))
+		} catch (error) {
+			new Notice(String(error))
+		}
+	}
+
+	/** Builds every assembled/building deck in dashboard order. */
+	async buildAllDecksFromCollection(): Promise<void> {
+		try {
+			const result = await buildAllDecks(this)
+			new Notice(t('root.build-all-done', { decks: result.decks, allocated: result.allocated }))
+		} catch (error) {
+			new Notice(String(error))
+		}
+	}
+
+	/** "Disassemble": releases what the deck holds, after confirmation. */
+	confirmDisassembleDeck(deck: TFile, afterwards?: () => Promise<void>): void {
+		const count = this.decks.readEntries(deck).reduce((sum, entry) => sum + entry.allocated, 0)
+		const name = deck.basename
+		const run = async () => {
+			try {
+				const released = await disassembleDeck(this, deck)
+				if (afterwards) await afterwards()
+				new Notice(t('deck.disassembled', { name, count: released }))
+			} catch (error) {
+				new Notice(String(error))
+			}
+		}
+		if (count === 0) {
+			void run()
+			return
+		}
+		new ConfirmModal(
+			this.app,
+			t('deck.disassemble-title', { name }),
+			t('deck.disassemble-body', { count }),
+			() => void run(),
+			t('deck.disassemble-confirm'),
+		).open()
+	}
+
+	/**
+	 * Status change from the deck view. Becoming assembled means "I built
+	 * it": the deck takes its copies from the collection first. Leaving
+	 * assembled asks whether to put the copies back.
+	 */
+	async changeDeckStatus(deck: TFile, next: DeckStatus): Promise<void> {
+		const current = this.decks.readStatus(deck)
+		if (next === current) return
+		if (next === 'assembled') {
+			await this.decks.setStatus(deck, next)
+			await this.buildDeckFromCollection(deck)
+			return
+		}
+		const held = this.decks.readEntries(deck).reduce((sum, entry) => sum + entry.allocated, 0)
+		if (current === 'assembled' && held > 0) {
+			this.confirmDisassembleDeck(deck, () => this.decks.setStatus(deck, next))
+			return
+		}
+		await this.decks.setStatus(deck, next)
 	}
 
 	async saveSettings(): Promise<void> {
@@ -764,54 +906,27 @@ export default class TcgBinderPlugin extends Plugin {
 	}
 
 	/**
-	 * Copies available across every non-wishlist collection, keyed by
-	 * functional card name. With "reserve deck copies" on, quantities used by
-	 * decks (other than `excludeDeck`) are subtracted — may go negative.
+	 * After a deck import: whatever the collections can't cover goes to the
+	 * wishlist. The lines come from the caller — the metadata cache has not
+	 * caught up with the note just written.
 	 */
-	private ownedByName(index: Map<string, CardMeta>, excludeDeck?: TFile): Map<string, number> {
-		const byName = new Map<string, number>()
-		for (const collection of this.store.listFiles('collection')) {
-			if (this.store.getRole(collection) === 'wishlist') continue
-			for (const entry of this.collections.readEntries(collection)) {
-				const meta = index.get(entry.id)
-				const key = functionalKey(meta?.nameEn ?? null, meta?.name ?? null, entry.id)
-				byName.set(key, (byName.get(key) ?? 0) + entry.qty)
-			}
-		}
-		if (this.settings.reserveDeckCopies) {
-			for (const deck of this.store.listFiles('deck')) {
-				if (excludeDeck && deck.path === excludeDeck.path) continue
-				for (const entry of this.decks.readEntries(deck)) {
-					const meta = index.get(entry.id)
-					const key = functionalKey(meta?.nameEn ?? null, meta?.name ?? null, entry.id)
-					byName.set(key, (byName.get(key) ?? 0) - entry.qty)
-				}
-			}
-		}
-		return byName
-	}
-
-	/** After a deck import: whatever the collections can't cover goes to the wishlist. */
 	private async wishlistMissingFromDeck(
 		deck: TFile,
 		deckLines: { id: string; link: string; qty: number }[],
 	): Promise<void> {
 		const index = this.cardNotes.buildIndex()
-		const owned = this.ownedByName(index, deck)
-		// Deck lines of the same functional card share one owned pool.
-		const needed = new Map<string, { id: string; link: string; qty: number }>()
-		for (const line of deckLines) {
-			const meta = index.get(line.id)
-			const key = functionalKey(meta?.nameEn ?? null, meta?.name ?? null, line.id)
-			const current = needed.get(key)
-			if (current) current.qty += line.qty
-			else needed.set(key, { ...line })
+		const { snapshot } = readAllocationState(this, index)
+		const target: AllocationDeck = {
+			path: deck.path,
+			name: deck.basename,
+			status: this.decks.readStatus(deck),
+			sortOrder: null,
+			lines: deckLines.map((line) => ({ id: line.id, qty: line.qty, allocated: 0, ordered: 0 })),
 		}
-		const missing = [...needed.entries()]
-			// Reserved copies can drive availability negative — clamp so one
-			// deck's missing count never exceeds what it actually needs.
-			.map(([key, line]) => ({ ...line, qty: line.qty - Math.max(0, owned.get(key) ?? 0) }))
-			.filter((line) => line.qty > 0)
+		const links = new Map(deckLines.map((line) => [line.id, line.link]))
+		const missing = analyzeDeck(snapshot, target, keyMapFrom(index, target.lines.map((line) => line.id)))
+			.filter((line) => line.toBuy > 0)
+			.map((line) => ({ id: line.id, link: links.get(line.id) ?? '', qty: line.toBuy }))
 		const count = await this.addMissingToWishlist(missing)
 		if (count > 0) new Notice(t('wishlist.added', { count }))
 	}

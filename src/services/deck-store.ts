@@ -1,7 +1,11 @@
 import { App, TFile } from 'obsidian'
 import type { DeckFormat } from '../types'
+import type { DeckStatus } from '../domain/deck-status'
+import { isDeckStatus } from '../domain/deck-status'
 import { isRecord } from '../utils/value-guards'
 import { localIsoDateTime } from '../utils/date'
+
+export type { DeckStatus } from '../domain/deck-status'
 
 /** One decklist line: a card and how many copies. Printing-specific by card id. */
 export interface DeckStoredEntry {
@@ -10,28 +14,40 @@ export interface DeckStoredEntry {
 	link: string
 	qty: number
 	/**
-	 * Copies bought/assigned specifically to THIS deck (via the missing
-	 * list's add-to-collection button). They are guaranteed to this deck in
-	 * the missing math and reserved from other decks even while the deck is
-	 * not assembled. Never exceeds qty.
+	 * Copies this deck physically HOLDS (built from the collection, or
+	 * received/added through its missing list). They are taken out of the
+	 * free pool every other deck sees — see domain/allocation.ts. Never
+	 * exceeds qty.
 	 */
 	allocated: number
 	/**
 	 * Purchases in transit for this line, one per seller/place. NOT
-	 * ownership: they never count as collection copies or reserve anything —
+	 * ownership: they never count as collection copies or hold anything —
 	 * they only stop the missing list from telling the user to buy them
-	 * again. Registering the arrival (the missing list's + button) burns
-	 * them down oldest-first. Total never exceeds qty.
+	 * again. Registering an arrival consumes that specific purchase. Total
+	 * never exceeds qty.
 	 */
 	orders: DeckOrder[]
 	/** Total copies bought and on the way (sum of `orders`). */
 	ordered: number
 }
 
-/** One purchase in transit: how many copies and where/from whom (free text). */
+/** One purchase in transit: how many copies, where/from whom (free text), price and date. */
 export interface DeckOrder {
 	qty: number
 	from: string
+	/** Price paid PER COPY, in the user's currency; null when unknown. */
+	price: number | null
+	/** Purchase date, ISO `YYYY-MM-DD`; null when unknown. */
+	date: string | null
+}
+
+function parsePrice(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null
+}
+
+function parseDate(value: unknown): string | null {
+	return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null
 }
 
 /**
@@ -49,7 +65,12 @@ function parseOrders(item: Record<string, unknown>, qty: number): DeckOrder[] {
 			const lineQty =
 				typeof line.qty === 'number' && Number.isInteger(line.qty) && line.qty > 0 ? line.qty : 0
 			if (lineQty === 0) continue
-			orders.push({ qty: lineQty, from: typeof line.from === 'string' ? line.from : '' })
+			orders.push({
+				qty: lineQty,
+				from: typeof line.from === 'string' ? line.from : '',
+				price: parsePrice(line.price),
+				date: parseDate(line.date),
+			})
 		}
 	} else {
 		const ordered =
@@ -60,6 +81,8 @@ function parseOrders(item: Record<string, unknown>, qty: number): DeckOrder[] {
 			orders.push({
 				qty: ordered,
 				from: typeof item['ordered-from'] === 'string' ? item['ordered-from'] : '',
+				price: null,
+				date: null,
 			})
 		}
 	}
@@ -69,18 +92,30 @@ function parseOrders(item: Record<string, unknown>, qty: number): DeckOrder[] {
 		const room = qty - total
 		if (room <= 0) break
 		const orderQty = Math.min(order.qty, room)
-		clamped.push({ qty: orderQty, from: order.from })
+		clamped.push({ ...order, qty: orderQty })
 		total += orderQty
 	}
 	return clamped
 }
 
+/** How many copies a raw line can still have on the way: qty minus what it holds. */
+function orderRoom(item: Record<string, unknown>): number {
+	const qty = typeof item.qty === 'number' ? item.qty : 0
+	const allocated =
+		typeof item.allocated === 'number' && Number.isInteger(item.allocated) ? Math.max(0, item.allocated) : 0
+	return Math.max(0, qty - Math.min(qty, allocated))
+}
+
 /** Writes the purchases back onto a raw entry record; empty list clears it. */
 function writeOrders(entry: Record<string, unknown>, orders: DeckOrder[]): void {
 	if (orders.length > 0) {
-		entry.orders = orders.map((order) =>
-			order.from.trim().length > 0 ? { qty: order.qty, from: order.from.trim() } : { qty: order.qty },
-		)
+		entry.orders = orders.map((order) => {
+			const record: Record<string, unknown> = { qty: order.qty }
+			if (order.from.trim().length > 0) record.from = order.from.trim()
+			if (order.price !== null) record.price = order.price
+			if (order.date !== null) record.date = order.date
+			return record
+		})
 	} else {
 		delete entry.orders
 	}
@@ -88,9 +123,6 @@ function writeOrders(entry: Record<string, unknown>, orders: DeckOrder[]): void 
 	delete entry.ordered
 	delete entry['ordered-from']
 }
-
-/** Deck lifecycle: physically built, actively being hunted, or just a list. */
-export type DeckStatus = 'assembled' | 'building' | 'list'
 
 /** A saved snapshot of the decklist, stored in the deck's own frontmatter. */
 export interface DeckRevision {
@@ -120,7 +152,8 @@ export class DeckStore {
 				typeof item.allocated === 'number' && Number.isInteger(item.allocated) && item.allocated > 0
 					? Math.min(item.allocated, qty)
 					: 0
-			const orders = parseOrders(item, qty)
+			// What is on the way can never exceed what the deck does not hold yet.
+			const orders = parseOrders(item, qty - allocated)
 			const ordered = orders.reduce((sum, order) => sum + order.qty, 0)
 			return [{ id, qty, allocated, orders, ordered, link: typeof item.link === 'string' ? item.link : '' }]
 		})
@@ -137,9 +170,8 @@ export class DeckStore {
 			const index = list.findIndex((item) => isRecord(item) && item.id === cardId)
 			if (index < 0 || !isRecord(list[index])) return
 			const current = list[index]
-			const qty = typeof current.qty === 'number' ? current.qty : 0
 			const entry: Record<string, unknown> = { ...current }
-			writeOrders(entry, parseOrders({ orders }, qty))
+			writeOrders(entry, parseOrders({ orders }, orderRoom(current)))
 			list[index] = entry
 			fm.entries = list
 		})
@@ -158,10 +190,10 @@ export class DeckStore {
 			const index = list.findIndex((item) => isRecord(item) && item.id === cardId)
 			if (index < 0 || !isRecord(list[index])) return
 			const current = list[index]
-			const qty = typeof current.qty === 'number' ? current.qty : 0
-			const orders = parseOrders(current, qty)
+			const room = orderRoom(current)
+			const orders = parseOrders(current, room)
 			if (delta >= 0) {
-				if (delta > 0) orders.push({ qty: delta, from: '' })
+				if (delta > 0) orders.push({ qty: delta, from: '', price: null, date: null })
 			} else {
 				let toBurn = -delta
 				while (toBurn > 0 && orders.length > 0) {
@@ -173,7 +205,7 @@ export class DeckStore {
 				}
 			}
 			const entry: Record<string, unknown> = { ...current }
-			writeOrders(entry, parseOrders({ orders }, qty))
+			writeOrders(entry, parseOrders({ orders }, room))
 			list[index] = entry
 			fm.entries = list
 		})
@@ -197,6 +229,58 @@ export class DeckStore {
 			const entry: Record<string, unknown> = { ...current }
 			if (next > 0) entry.allocated = next
 			else delete entry.allocated
+			list[index] = entry
+			fm.entries = list
+		})
+	}
+
+	/**
+	 * Sets absolute `allocated` values on several lines in one write — the
+	 * output of the domain's build/disassemble/clamp planners. Zero removes
+	 * the key; values are clamped to the line's quantity.
+	 */
+	async setAllocations(file: TFile, changes: { id: string; allocated: number }[]): Promise<void> {
+		if (changes.length === 0) return
+		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+			const raw: unknown = fm.entries
+			const list: unknown[] = Array.isArray(raw) ? [...(raw as unknown[])] : []
+			for (const change of changes) {
+				const index = list.findIndex((item) => isRecord(item) && item.id === change.id)
+				if (index < 0 || !isRecord(list[index])) continue
+				const current = list[index]
+				const qty = typeof current.qty === 'number' ? current.qty : 0
+				const next = Math.max(0, Math.min(qty, change.allocated))
+				const entry: Record<string, unknown> = { ...current }
+				if (next > 0) entry.allocated = next
+				else delete entry.allocated
+				list[index] = entry
+			}
+			fm.entries = list
+		})
+	}
+
+	/**
+	 * Consumes `qty` copies of ONE specific purchase (by position in the
+	 * line's orders) — the copies arrived and were registered. The purchase
+	 * shrinks and disappears only when it reaches zero; other purchases on
+	 * the same line are never touched.
+	 */
+	async consumeOrder(file: TFile, cardId: string, orderIndex: number, qty: number): Promise<void> {
+		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+			const raw: unknown = fm.entries
+			const list: unknown[] = Array.isArray(raw) ? [...(raw as unknown[])] : []
+			const index = list.findIndex((item) => isRecord(item) && item.id === cardId)
+			if (index < 0 || !isRecord(list[index])) return
+			const current = list[index]
+			const orders = parseOrders(current, orderRoom(current))
+			const order = orders[orderIndex]
+			if (!order) return
+			order.qty = Math.max(0, order.qty - Math.max(0, qty))
+			const entry: Record<string, unknown> = { ...current }
+			writeOrders(
+				entry,
+				orders.filter((line) => line.qty > 0),
+			)
 			list[index] = entry
 			fm.entries = list
 		})
@@ -265,10 +349,32 @@ export class DeckStore {
 		})
 	}
 
-	/** Replaces the whole decklist — used by revision restore. */
+	/**
+	 * Replaces the whole decklist — used by revision restore. What the deck
+	 * physically holds (`allocated`) and its purchases in transit survive
+	 * the restore, clamped to the restored quantities.
+	 */
 	async setEntries(file: TFile, entries: { id: string; link: string; qty: number }[]): Promise<void> {
 		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-			fm.entries = entries.map((entry) => ({ id: entry.id, link: entry.link, qty: entry.qty }))
+			const raw: unknown = fm.entries
+			const previous = new Map<string, Record<string, unknown>>()
+			if (Array.isArray(raw)) {
+				for (const item of raw as unknown[]) {
+					if (isRecord(item) && typeof item.id === 'string') previous.set(item.id, item)
+				}
+			}
+			fm.entries = entries.map((entry) => {
+				const record: Record<string, unknown> = { id: entry.id, link: entry.link, qty: entry.qty }
+				const old = previous.get(entry.id)
+				if (!old) return record
+				const allocated =
+					typeof old.allocated === 'number' && Number.isInteger(old.allocated)
+						? Math.max(0, Math.min(entry.qty, old.allocated))
+						: 0
+				if (allocated > 0) record.allocated = allocated
+				writeOrders(record, parseOrders(old, entry.qty - allocated))
+				return record
+			})
 		})
 	}
 
@@ -285,11 +391,9 @@ export class DeckStore {
 	}
 
 	/**
-	 * Lifecycle of a deck:
-	 * - 'assembled': physically built — reserves every copy it lists.
-	 * - 'building': the user is actively hunting its cards — flagged on the
-	 *   dashboard; reserves only the copies bought for it (allocated).
-	 * - 'list': just an idea/reference — reserves only allocated copies too.
+	 * Lifecycle of a deck as stated by the user (see domain/deck-status.ts).
+	 * Status is intent; the copies a deck actually holds are its lines'
+	 * `allocated` counts.
 	 *
 	 * Default is 'assembled' (legacy behavior); the pre-status boolean
 	 * `assembled: false` reads as 'building' (users unticked exactly the
@@ -298,7 +402,7 @@ export class DeckStore {
 	readStatus(file: TFile): DeckStatus {
 		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter
 		const status: unknown = frontmatter?.status
-		if (status === 'assembled' || status === 'building' || status === 'list') return status
+		if (isDeckStatus(status)) return status
 		return frontmatter?.assembled === false ? 'building' : 'assembled'
 	}
 
@@ -311,7 +415,7 @@ export class DeckStore {
 		})
 	}
 
-	/** Only assembled decks hold (and therefore reserve) their full list. */
+	/** Whether the user marked the deck as physically built. */
 	readAssembled(file: TFile): boolean {
 		return this.readStatus(file) === 'assembled'
 	}
@@ -332,7 +436,11 @@ export class DeckStore {
 		})
 	}
 
-	/** Sets the quantity of a card in the deck; zero or less removes the line. */
+	/**
+	 * Sets the quantity of a card in the deck; zero or less removes the line.
+	 * Lowering the quantity also clamps what the line holds and has on the
+	 * way, so the stored state never claims more than the list.
+	 */
 	async setQuantity(file: TFile, cardId: string, qty: number): Promise<void> {
 		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
 			const raw: unknown = fm.entries
@@ -342,7 +450,16 @@ export class DeckStore {
 			if (qty <= 0) {
 				list.splice(index, 1)
 			} else if (isRecord(list[index])) {
-				list[index] = { ...list[index], qty }
+				const current = list[index]
+				const entry: Record<string, unknown> = { ...current, qty }
+				const allocated =
+					typeof current.allocated === 'number' && Number.isInteger(current.allocated)
+						? Math.max(0, Math.min(qty, current.allocated))
+						: 0
+				if (allocated > 0) entry.allocated = allocated
+				else delete entry.allocated
+				writeOrders(entry, parseOrders(current, qty - allocated))
+				list[index] = entry
 			}
 			fm.entries = list
 		})
