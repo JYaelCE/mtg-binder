@@ -208,35 +208,16 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 
 	const isWishlist = plugin.store.getRole(file) === 'wishlist'
 
-	/** Wishlist only: the card was bought — move the line into a real collection. */
+	/** The paid column only earns its width when someone recorded a price. */
+	const anyPaid = useMemo(() => rows.some((row) => row.paid !== null), [rows])
+
+	/**
+	 * Wishlist only: copies arrived — the shared receive flow adds them to a
+	 * real collection (price paid, optional deck to allocate them to) and
+	 * shrinks this line by what actually came.
+	 */
 	const acquire = (row: Row) => {
-		const targets = plugin.store
-			.listFiles('collection')
-			.filter((f) => f.path !== file.path && plugin.store.getRole(f) !== 'wishlist')
-		if (targets.length === 0) {
-			new Notice(t('notice.no-other-collection'))
-			return
-		}
-		new FilePickerModal(app, targets, t('picker.collection'), (target) => {
-			void (async () => {
-				await plugin.collections.addEntry(
-					target,
-					row.id,
-					row.link,
-					Math.max(1, row.qty),
-					row.variant,
-					row.condition,
-				)
-				await plugin.collections.removeEntry(file, {
-					id: row.id,
-					variant: row.variant,
-					condition: row.condition,
-				})
-				new Notice(
-					t('wishlist.acquired', { name: row.meta?.name ?? row.id, collection: target.basename }),
-				)
-			})()
-		}).open()
+		plugin.receiveFromWishlist(file, row, row.meta)
 	}
 
 	/** Moves the whole line to another collection, chosen via fuzzy picker. */
@@ -437,8 +418,8 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 									{isWishlist && (
 										<button
 											className="tcgb-qty-btn tcgb-acquire"
-											aria-label={t('wishlist.acquire')}
-											title={t('wishlist.acquire')}
+											aria-label={t('acq.received')}
+											title={t('acq.received-hint')}
 											onClick={() => acquire(row)}
 										>
 											✓
@@ -470,6 +451,7 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 								<th className="tcgb-cell-center">{t('view.col.playset')}</th>
 								<th className="tcgb-cell-num">{t('view.col.qty')}</th>
 								<th className="tcgb-cell-num">{t('view.col.price')}</th>
+								{anyPaid && <th className="tcgb-cell-num">{t('view.col.paid')}</th>}
 								<th className="tcgb-cell-num">{t('view.col.added')}</th>
 								<th />
 							</tr>
@@ -554,13 +536,18 @@ export function CollectionView({ plugin, file, version, onBack }: CollectionView
 											? `$${(row.qty * row.meta.priceMarket).toFixed(2)}`
 											: '—'}
 									</td>
+									{anyPaid && (
+										<td className="tcgb-cell-num tcgb-cell-muted">
+											{row.paid !== null ? `$${(row.qty * row.paid).toFixed(2)}` : '—'}
+										</td>
+									)}
 									<td className="tcgb-cell-num tcgb-cell-muted">{row.added ?? '—'}</td>
 									<td className="tcgb-cell-actions">
 										{isWishlist && (
 											<button
 												className="tcgb-row-action tcgb-acquire"
-												aria-label={t('wishlist.acquire')}
-												title={t('wishlist.acquire')}
+												aria-label={t('acq.received')}
+												title={t('acq.received-hint')}
 												onClick={() => acquire(row)}
 											>
 												✓

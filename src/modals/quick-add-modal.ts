@@ -5,6 +5,7 @@ import { CARD_CONDITIONS, CARD_VARIANTS } from '../types'
 import { parseQuickEntries } from '../domain/quick-entry'
 import { stripLeadingZeros } from '../domain/card-list'
 import { t } from '../i18n'
+import { entryDefaults, rememberEntryDefaults } from '../services/entry-defaults'
 
 export interface QuickAddCallbacks {
 	add: (
@@ -26,9 +27,6 @@ export interface QuickAddCallbacks {
  */
 export class QuickAddModal extends Modal {
 	// Session-sticky defaults, shared with consecutive quick-add runs.
-	private static lastCollectionPath: string | null = null
-	private static lastVariant: CardVariant = 'normal'
-	private static lastCondition: CardCondition = 'NM'
 
 	private inputEl!: HTMLInputElement
 	private previewEl!: HTMLElement
@@ -56,9 +54,9 @@ export class QuickAddModal extends Modal {
 		contentEl.createDiv({ cls: 'tcgb-import-desc', text: t('quick.hint') })
 
 		let collection =
-			this.collections.find((f) => f.path === QuickAddModal.lastCollectionPath) ?? this.collections[0]
-		let variant = QuickAddModal.lastVariant
-		let condition = QuickAddModal.lastCondition
+			this.collections.find((f) => f.path === entryDefaults.collectionPath) ?? this.collections[0]
+		let variant = entryDefaults.variant
+		let condition = entryDefaults.condition
 
 		new Setting(contentEl).setName(t('add.collection')).addDropdown((dd) => {
 			this.collections.forEach((file, i) => {
@@ -67,7 +65,7 @@ export class QuickAddModal extends Modal {
 			dd.setValue(String(this.collections.indexOf(collection)))
 			dd.onChange((value) => {
 				collection = this.collections[Number(value)]
-				QuickAddModal.lastCollectionPath = collection.path
+				rememberEntryDefaults({ collectionPath: collection.path })
 			})
 		})
 
@@ -76,7 +74,7 @@ export class QuickAddModal extends Modal {
 			dd.setValue(variant)
 			dd.onChange((value) => {
 				variant = value as CardVariant
-				QuickAddModal.lastVariant = variant
+				rememberEntryDefaults({ variant })
 			})
 		})
 
@@ -85,7 +83,7 @@ export class QuickAddModal extends Modal {
 			dd.setValue(condition)
 			dd.onChange((value) => {
 				condition = value as CardCondition
-				QuickAddModal.lastCondition = condition
+				rememberEntryDefaults({ condition })
 			})
 		})
 

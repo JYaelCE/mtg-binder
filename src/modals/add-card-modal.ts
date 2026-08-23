@@ -2,6 +2,7 @@ import { App, Modal, Setting, TFile } from 'obsidian'
 import type { CardCondition, CardVariant } from '../types'
 import { CARD_CONDITIONS, CARD_VARIANTS } from '../types'
 import type { CardData } from '../services/card-data/card-data-source'
+import { entryDefaults, rememberEntryDefaults } from '../services/entry-defaults'
 import { t } from '../i18n'
 
 export interface AddCardChoice {
@@ -37,9 +38,6 @@ export function previewFromCardData(card: CardData): CardPreview {
 /** Quantity/variant/condition picker for adding one card to a collection. */
 export class AddCardModal extends Modal {
 	// Session-sticky defaults: bulk-adding usually repeats the same choices.
-	private static lastCollectionPath: string | null = null
-	private static lastVariant: CardVariant = 'normal'
-	private static lastCondition: CardCondition = 'NM'
 	private static lastKeepSearching = true
 
 	constructor(
@@ -68,10 +66,10 @@ export class AddCardModal extends Modal {
 
 		const showKeepSearching = this.options.showKeepSearching ?? true
 		let collection =
-			this.collections.find((f) => f.path === AddCardModal.lastCollectionPath) ?? this.collections[0]
+			this.collections.find((f) => f.path === entryDefaults.collectionPath) ?? this.collections[0]
 		let quantity = this.options.initialQuantity ?? 1
-		let variant = AddCardModal.lastVariant
-		let condition = AddCardModal.lastCondition
+		let variant = entryDefaults.variant
+		let condition = entryDefaults.condition
 		let keepSearching = showKeepSearching && AddCardModal.lastKeepSearching
 
 		new Setting(contentEl).setName(t('add.collection')).addDropdown((dd) => {
@@ -125,9 +123,7 @@ export class AddCardModal extends Modal {
 				.onClick(() => {
 					const qty =
 						Number.isInteger(quantity) && quantity > 0 ? quantity : (this.options.initialQuantity ?? 1)
-					AddCardModal.lastCollectionPath = collection.path
-					AddCardModal.lastVariant = variant
-					AddCardModal.lastCondition = condition
+					rememberEntryDefaults({ collectionPath: collection.path, variant, condition })
 					if (showKeepSearching) AddCardModal.lastKeepSearching = keepSearching
 					this.close()
 					this.onSubmit({ collection, quantity: qty, variant, condition, keepSearching })

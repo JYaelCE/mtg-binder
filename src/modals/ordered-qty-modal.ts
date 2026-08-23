@@ -1,5 +1,6 @@
 import { App, Modal, Setting } from 'obsidian'
 import type { DeckOrder } from '../services/deck-store'
+import { localIsoDate } from '../utils/date'
 import { t } from '../i18n'
 
 /**
@@ -34,7 +35,7 @@ export class OrderedQtyModal extends Modal {
 		new Setting(contentEl)
 			.addButton((btn) => {
 				btn.setButtonText(t('ordered.add')).onClick(() => {
-					this.drafts.push({ qty: 1, from: '', price: null, date: null })
+					this.drafts.push({ qty: 1, from: '', price: null, date: localIsoDate() })
 					this.renderList(listEl)
 				})
 			})
@@ -74,6 +75,26 @@ export class OrderedQtyModal extends Modal {
 			fromEl.value = draft.from
 			fromEl.addEventListener('input', () => {
 				draft.from = fromEl.value
+			})
+			const priceEl = row.createEl('input', {
+				cls: 'tcgb-order-price',
+				type: 'number',
+				placeholder: t('ordered.price'),
+				attr: { min: '0', step: '0.01', 'aria-label': t('ordered.price') },
+			})
+			if (draft.price !== null) priceEl.value = String(draft.price)
+			priceEl.addEventListener('input', () => {
+				const value = Number(priceEl.value)
+				draft.price = priceEl.value.length > 0 && Number.isFinite(value) && value >= 0 ? value : null
+			})
+			const dateEl = row.createEl('input', {
+				cls: 'tcgb-order-date',
+				type: 'date',
+				attr: { 'aria-label': t('ordered.date') },
+			})
+			if (draft.date !== null) dateEl.value = draft.date
+			dateEl.addEventListener('input', () => {
+				draft.date = dateEl.value.length > 0 ? dateEl.value : null
 			})
 			const removeEl = row.createEl('button', {
 				cls: 'tcgb-order-remove',

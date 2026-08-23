@@ -3,6 +3,7 @@ import type { CardCondition, CardVariant } from '../types'
 import { isCardCondition, isCardVariant } from '../types'
 import { isRecord } from '../utils/value-guards'
 import { localIsoDate } from '../utils/date'
+import { mergePaid } from '../domain/paid'
 
 /** One line of a collection: a card in a specific variant + condition. */
 export interface StoredEntry {
@@ -18,6 +19,15 @@ export interface StoredEntry {
 	 * Null on rows that predate this field.
 	 */
 	added: string | null
+	/**
+	 * Price paid PER COPY, in the user's currency. Batches merged into one
+	 * line keep a quantity-weighted average. Null when never recorded.
+	 */
+	paid: number | null
+}
+
+function parsePaid(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}/
@@ -64,6 +74,7 @@ export class CollectionStore {
 						typeof item.added === 'string' && ISO_DATE.test(item.added)
 							? item.added.slice(0, 10)
 							: null,
+					paid: parsePaid(item.paid),
 				},
 			]
 		})
@@ -78,6 +89,8 @@ export class CollectionStore {
 		condition: CardCondition,
 		/** Insert the new line right after this entry instead of appending (variant splits). */
 		afterKey?: EntryKey,
+		/** Price paid per copy for THIS batch; merges as a weighted average. */
+		paid?: number | null,
 	): Promise<void> {
 		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
 			const raw: unknown = fm.entries
@@ -87,11 +100,13 @@ export class CollectionStore {
 				const current = list[index]
 				const currentQty = typeof current.qty === 'number' ? current.qty : 0
 				const nextQty = currentQty + qty
+				const mergedPaid = mergePaid(currentQty, parsePaid(current.paid), qty, paid ?? null)
 				list[index] = {
 					...current,
 					qty: nextQty,
 					// A checklist row receiving its first copies gets stamped now.
 					...(nextQty > 0 && typeof current.added !== 'string' ? { added: today() } : {}),
+					...(mergedPaid !== null ? { paid: mergedPaid } : {}),
 				}
 			} else {
 				const entry = {
@@ -101,6 +116,7 @@ export class CollectionStore {
 					variant,
 					condition,
 					...(qty > 0 ? { added: today() } : {}),
+					...(paid !== null && paid !== undefined ? { paid: parsePaid(paid) } : {}),
 				}
 				const anchor = afterKey ? list.findIndex((item) => matchesKey(item, afterKey)) : -1
 				if (anchor >= 0) {
@@ -191,10 +207,12 @@ export class CollectionStore {
 					currentAdded && entry.added
 						? (currentAdded < entry.added ? currentAdded : entry.added)
 						: (currentAdded ?? entry.added)
+				const mergedPaid = mergePaid(currentQty, parsePaid(current.paid), entry.qty, entry.paid)
 				list[index] = {
 					...current,
 					qty: currentQty + entry.qty,
 					...(earliest ? { added: earliest } : {}),
+					...(mergedPaid !== null ? { paid: mergedPaid } : {}),
 				}
 			} else {
 				list.push({
@@ -204,6 +222,7 @@ export class CollectionStore {
 					variant: entry.variant,
 					condition: entry.condition,
 					...(entry.added ? { added: entry.added } : {}),
+					...(entry.paid !== null ? { paid: entry.paid } : {}),
 				})
 			}
 			fm.entries = list
@@ -218,6 +237,22 @@ export class CollectionStore {
 		if (!entry) return
 		await this.upsertEntry(to, entry)
 		await this.removeEntry(from, key)
+	}
+
+	/** Records (or clears, with null) the per-copy price paid for a line. */
+	async setPaid(file: TFile, key: EntryKey, paid: number | null): Promise<void> {
+		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+			const raw: unknown = fm.entries
+			const list: unknown[] = Array.isArray(raw) ? [...(raw as unknown[])] : []
+			const index = list.findIndex((item) => matchesKey(item, key))
+			if (index < 0 || !isRecord(list[index])) return
+			const entry: Record<string, unknown> = { ...list[index] }
+			const value = paid === null ? null : parsePaid(paid)
+			if (value !== null) entry.paid = value
+			else delete entry.paid
+			list[index] = entry
+			fm.entries = list
+		})
 	}
 
 	/** Deletes an entry line entirely (the explicit ×, as opposed to qty 0). */
@@ -242,6 +277,7 @@ export class CollectionStore {
 				variant: entry.variant,
 				condition: entry.condition,
 				...(entry.added ? { added: entry.added } : {}),
+				...(entry.paid !== null ? { paid: entry.paid } : {}),
 			}))
 		})
 	}

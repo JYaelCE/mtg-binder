@@ -10,6 +10,7 @@ import type { StoredEntry } from '../services/collection-store'
 import { t } from '../i18n'
 import { useVaultVersion } from '../hooks/useVaultVersion'
 import { useAllocation } from '../hooks/useAllocation'
+import { PurchasesSection } from './PurchasesSection'
 import { CollectionView } from './CollectionView'
 import { DeckView } from './DeckView'
 import { PortfolioChart } from './PortfolioChart'
@@ -122,7 +123,8 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 	const cardIndex = useMemo(() => plugin.cardNotes.buildIndex(), [plugin, version])
 
 	/** One allocation snapshot for the whole dashboard (missing counts, held copies, warnings). */
-	const { snapshot } = useAllocation(plugin, cardIndex, version)
+	const allocation = useAllocation(plugin, cardIndex, version)
+	const { snapshot } = allocation
 
 	const [query, setQuery] = useState('')
 	const searching = query.trim().length > 0
@@ -319,6 +321,14 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 			</div>
 
 			<PortfolioChart plugin={plugin} refresh={chartRefresh} />
+
+			<PurchasesSection
+				plugin={plugin}
+				decks={decks}
+				cardIndex={cardIndex}
+				allocation={allocation}
+				onOpenDeck={(file) => setSelected({ kind: 'deck', file })}
+			/>
 
 			{(collections.length > 0 || decks.length > 0) && (
 				<div className="tcgb-dashboard-actions">

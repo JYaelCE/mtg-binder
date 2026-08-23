@@ -211,14 +211,19 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 
 	const editOrdered = (row: MissingRow) => {
 		new OrderedQtyModal(app, row.meta?.name ?? row.id, row.orders, row.missing, (orders) => {
-			void (async () => {
-				await plugin.decks.setOrders(file, row.id, orders)
-				// Buying activity IS the "actively hunting cards" signal.
-				if (orders.length > 0 && plugin.decks.readStatus(file) === 'list') {
-					await plugin.decks.setStatus(file, 'building')
-				}
-			})()
+			void plugin.placeOrders(file, row.id, row.link, row.orders, orders)
 		}).open()
+	}
+
+	/** to buy / on the way / held — one word the eye can sort the list by. */
+	const stateChip = (row: MissingRow) => {
+		if (row.toBuy > 0) {
+			return <span className="tcgb-acq-state tcgb-acq-state-buy">{t('acq.state.buy')}</span>
+		}
+		if (row.ordered > 0) {
+			return <span className="tcgb-acq-state tcgb-acq-state-ordered">{t('acq.state.ordered')}</span>
+		}
+		return null
 	}
 
 	/**
@@ -479,6 +484,7 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 									<div className="tcgb-thumb tcgb-thumb-empty" />
 								)}
 								<span className="tcgb-deck-missing-qty">{row.toBuy}×</span>
+								{stateChip(row)}
 								<div className="tcgb-deck-missing-name">
 									<a className="tcgb-card-link" onClick={() => openCard(row)}>
 										{row.meta?.name ?? row.id}
@@ -496,29 +502,48 @@ export function DeckView({ plugin, file, version, onBack }: DeckViewProps) {
 									? `$${(row.toBuy * row.meta.priceMarket).toFixed(2)}`
 									: '—'}
 							</span>
-							<button
-								className="tcgb-row-action"
-								aria-label={t('deck.mark-ordered')}
-								title={t('deck.mark-ordered')}
-								onClick={() => {
-									editOrdered(row)
-								}}
-							>
-								🛒
-							</button>
-							{row.meta && (
+							<span className="tcgb-acq-actions">
 								<button
 									className="tcgb-row-action"
-									aria-label={t('deck.add-missing')}
-									title={t('deck.add-missing')}
+									aria-label={t('acq.bought')}
+									title={t('acq.bought-hint')}
 									onClick={() => {
-										const meta = row.meta
-										if (meta) void plugin.openAddOwnedCard(meta, row.link, row.missing, file)
+										editOrdered(row)
 									}}
 								>
-									+
+									🛒
 								</button>
-							)}
+								{row.meta && row.missing > row.ordered && (
+									<button
+										className="tcgb-row-action tcgb-acquire"
+										aria-label={t('acq.have')}
+										title={t('acq.have-hint')}
+										onClick={() => {
+											const meta = row.meta
+											if (meta) {
+												void plugin.markHave(file, row.id, row.link, row.missing - row.ordered, meta)
+											}
+										}}
+									>
+										✓
+									</button>
+								)}
+								{row.meta &&
+									row.orders.map((order, orderIndex) => (
+										<button
+											key={orderIndex}
+											className="tcgb-btn tcgb-acq-receive"
+											title={t('acq.received-hint')}
+											onClick={() => {
+												const meta = row.meta
+												if (meta) plugin.receiveOrder(file, row, orderIndex, meta)
+											}}
+										>
+											{t('acq.received')}{' '}
+											{order.from.length > 0 ? `${order.qty}× ${order.from}` : `${order.qty}×`}
+										</button>
+									))}
+							</span>
 						</div>
 					))
 				)}

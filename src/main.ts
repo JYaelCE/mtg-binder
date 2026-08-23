@@ -37,6 +37,10 @@ import { analyzeDeck } from './domain/allocation'
 import type { AllocationDeck } from './domain/allocation'
 import { keyMapFrom, readAllocationState } from './services/deck-availability'
 import { buildAllDecks, buildDeck, disassembleDeck } from './services/allocation-actions'
+import { wishlistDelta } from './domain/wishlist-sync'
+import type { CardCondition, CardVariant } from './types'
+import { ReceiveModal } from './modals/receive-modal'
+import type { DeckOrder, DeckStoredEntry } from './services/deck-store'
 import { bucketFor, TypeBucket } from './domain/type-buckets'
 import { parseCsv } from './domain/csv'
 import { CsvCardRow, mapCsvRows } from './domain/csv-import'
@@ -804,25 +808,150 @@ export default class TcgBinderPlugin extends Plugin {
 		}
 	}
 
-	/**
-	 * Adds an already-known card (existing note) to a collection — used by the
-	 * deck view's "missing from collection" list after the cards were bought.
-	 * The new copies are allocated to `forDeck`: they satisfy THAT deck's
-	 * missing math and are reserved from every other deck.
-	 */
-	async openAddOwnedCard(meta: CardMeta, link: string, initialQuantity: number, forDeck: TFile): Promise<void> {
-		const collections = await this.ensureCollections()
-		const preview = {
+	/** Non-wishlist collections, created on demand — receiving needs a destination. */
+	private receiveTargets(): TFile[] {
+		return this.store.listFiles('collection').filter((file) => this.store.getRole(file) !== 'wishlist')
+	}
+
+	private cardPreview(meta: CardMeta): { name: string; image: string | null; metaLine: string } {
+		return {
 			name: meta.name,
 			image: meta.image,
 			metaLine: [meta.setName ?? meta.setCode, meta.number ? `#${meta.number}` : null, meta.rarity]
 				.filter(Boolean)
 				.join(' · '),
 		}
-		new AddCardModal(
+	}
+
+	/**
+	 * Moves the wishlist line of a card by `delta` copies (negative when
+	 * copies were ordered/received, positive when a purchase is cancelled).
+	 * The wishlist means "still to buy" — this keeps it true automatically.
+	 */
+	async adjustWishlist(id: string, link: string, delta: number): Promise<void> {
+		if (delta === 0) return
+		const wishlist = this.store.listFiles('collection').find((file) => this.store.getRole(file) === 'wishlist')
+		if (!wishlist) return
+		const entries = this.collections.readEntries(wishlist).filter((entry) => entry.id === id)
+		if (delta > 0) {
+			await this.collections.addEntry(wishlist, id, link, delta, 'normal', 'NM')
+			return
+		}
+		let toRemove = -delta
+		for (const entry of entries) {
+			if (toRemove <= 0) break
+			const take = Math.min(entry.qty, toRemove)
+			toRemove -= take
+			const key = { id: entry.id, variant: entry.variant, condition: entry.condition }
+			if (entry.qty - take <= 0) await this.collections.removeEntry(wishlist, key)
+			else await this.collections.setQuantity(wishlist, key, entry.qty - take)
+		}
+	}
+
+	/**
+	 * Saves a missing line's purchase list ("Bought"). Ordering copies takes
+	 * them off the wishlist (cancelling puts them back), and buying activity
+	 * promotes a bare list to "building".
+	 */
+	async placeOrders(deck: TFile, cardId: string, link: string, prev: DeckOrder[], next: DeckOrder[]): Promise<void> {
+		await this.decks.setOrders(deck, cardId, next)
+		await this.adjustWishlist(cardId, link, wishlistDelta(next, prev))
+		if (next.length > 0 && this.decks.readStatus(deck) === 'list') {
+			await this.decks.setStatus(deck, 'building')
+		}
+	}
+
+	/** Cancels ONE purchase (by position) — the copies go back to the wishlist. */
+	async cancelOrder(deck: TFile, line: DeckStoredEntry, orderIndex: number): Promise<void> {
+		const order = line.orders[orderIndex]
+		if (!order) return
+		const next = line.orders.filter((_, index) => index !== orderIndex)
+		await this.decks.setOrders(deck, line.id, next)
+		await this.adjustWishlist(line.id, line.link, order.qty)
+		new Notice(t('ordered.cancelled'))
+	}
+
+	/**
+	 * "Received": copies of ONE specific purchase arrived — maybe only part
+	 * of it. They enter a collection (with the price paid), the deck takes
+	 * them (allocated), and that purchase shrinks by exactly what arrived;
+	 * other sellers' purchases stay on the way.
+	 */
+	receiveOrder(deck: TFile, line: DeckStoredEntry, orderIndex: number, meta: CardMeta): void {
+		const order = line.orders[orderIndex]
+		if (!order) return
+		const targets = this.receiveTargets()
+		if (targets.length === 0) {
+			new Notice(t('notice.no-other-collection'))
+			return
+		}
+		new ReceiveModal(
 			this.app,
-			preview,
-			collections,
+			this.cardPreview(meta),
+			targets,
+			{ from: order.from, max: order.qty, price: order.price, decks: null },
+			(choice) => {
+				void (async () => {
+					try {
+						await this.collections.addEntry(
+							choice.collection,
+							meta.cardId,
+							line.link,
+							choice.quantity,
+							choice.variant,
+							choice.condition,
+							undefined,
+							choice.paid,
+						)
+						await this.decks.consumeOrder(deck, line.id, orderIndex, choice.quantity)
+						await this.decks.bumpAllocated(deck, line.id, choice.quantity)
+						if (this.decks.readStatus(deck) === 'list') {
+							await this.decks.setStatus(deck, 'building')
+						}
+						new Notice(
+							t('acq.received-notice', {
+								qty: choice.quantity,
+								name: meta.name,
+								collection: choice.collection.basename,
+							}),
+						)
+					} catch (error) {
+						new Notice(String(error))
+					}
+				})()
+			},
+		).open()
+	}
+
+	/**
+	 * "I have it": free copies in the collections are simply allocated to
+	 * the deck; if the collections don't have enough, the rest is added via
+	 * the receive dialog (they exist physically, the plugin just didn't
+	 * know). Either way the wishlist stops asking for them.
+	 */
+	async markHave(deck: TFile, cardId: string, link: string, missing: number, meta: CardMeta): Promise<void> {
+		const index = this.cardNotes.buildIndex()
+		const { snapshot } = readAllocationState(this, index)
+		const key = keyMapFrom(index, [cardId]).get(cardId) ?? cardId
+		const free = snapshot.pools.get(key)?.free ?? 0
+		const take = Math.min(free, missing)
+		if (take > 0) {
+			await this.decks.bumpAllocated(deck, cardId, take)
+			await this.adjustWishlist(cardId, link, -take)
+			new Notice(t('acq.have-notice', { qty: take, name: meta.name, deck: deck.basename }))
+		}
+		const remainder = missing - take
+		if (remainder <= 0) return
+		const targets = this.receiveTargets()
+		if (targets.length === 0) {
+			new Notice(t('notice.no-other-collection'))
+			return
+		}
+		new ReceiveModal(
+			this.app,
+			this.cardPreview(meta),
+			targets,
+			{ from: '', max: remainder, price: null, decks: null },
 			(choice) => {
 				void (async () => {
 					try {
@@ -833,21 +962,73 @@ export default class TcgBinderPlugin extends Plugin {
 							choice.quantity,
 							choice.variant,
 							choice.condition,
+							undefined,
+							choice.paid,
 						)
-						await this.decks.bumpAllocated(forDeck, meta.cardId, choice.quantity)
-						// Registering the arrival burns down the on-the-way count.
-						await this.decks.bumpOrdered(forDeck, meta.cardId, -choice.quantity)
-						// Buying activity IS the "actively hunting cards" signal.
-						if (this.decks.readStatus(forDeck) === 'list') {
-							await this.decks.setStatus(forDeck, 'building')
-						}
+						await this.decks.bumpAllocated(deck, cardId, choice.quantity)
+						await this.adjustWishlist(cardId, link, -choice.quantity)
 						new Notice(t('notice.card-added', { name: meta.name }))
 					} catch (error) {
 						new Notice(String(error))
 					}
 				})()
 			},
-			{ initialQuantity, showKeepSearching: false },
+		).open()
+	}
+
+	/**
+	 * "Received" from the wishlist: the same receive flow, with an optional
+	 * deck to allocate the copies to. The wishlist line shrinks by what
+	 * actually arrived.
+	 */
+	receiveFromWishlist(
+		wishlist: TFile,
+		row: { id: string; link: string; qty: number; variant: CardVariant; condition: CardCondition },
+		meta: CardMeta | null,
+	): void {
+		const targets = this.receiveTargets()
+		if (targets.length === 0) {
+			new Notice(t('notice.no-other-collection'))
+			return
+		}
+		const preview = meta
+			? this.cardPreview(meta)
+			: { name: row.id, image: null, metaLine: '' }
+		const decks = this.store.listFiles('deck')
+		new ReceiveModal(
+			this.app,
+			preview,
+			targets,
+			{ from: '', max: Math.max(1, row.qty), price: null, decks: decks.length > 0 ? decks : null },
+			(choice) => {
+				void (async () => {
+					try {
+						await this.collections.addEntry(
+							choice.collection,
+							row.id,
+							row.link,
+							choice.quantity,
+							choice.variant,
+							choice.condition,
+							undefined,
+							choice.paid,
+						)
+						await this.adjustWishlist(row.id, row.link, -choice.quantity)
+						if (choice.deck) {
+							await this.decks.bumpAllocated(choice.deck, row.id, choice.quantity)
+						}
+						new Notice(
+							t('acq.received-notice', {
+								qty: choice.quantity,
+								name: preview.name,
+								collection: choice.collection.basename,
+							}),
+						)
+					} catch (error) {
+						new Notice(String(error))
+					}
+				})()
+			},
 		).open()
 	}
 
@@ -1073,6 +1254,7 @@ export default class TcgBinderPlugin extends Plugin {
 					variant: 'normal' as const,
 					condition: 'NM' as const,
 					added: null,
+					paid: null,
 				})),
 			)
 			new Notice(t('notice.set-collection-created', { name: set.name, count: cards.length }))

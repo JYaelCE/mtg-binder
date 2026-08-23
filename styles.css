@@ -1741,6 +1741,15 @@ select.tcgb-cond {
 	align-items: center;
 	gap: var(--size-4-2);
 	margin-bottom: var(--size-4-2);
+	flex-wrap: wrap;
+}
+
+.tcgb-order-price {
+	width: 6.5em;
+}
+
+.tcgb-order-date {
+	width: 9.5em;
 }
 
 .tcgb-order-qty {
@@ -1773,4 +1782,62 @@ select.tcgb-cond {
 .tcgb-drop-target {
 	box-shadow: inset 0 0 0 2px var(--interactive-accent);
 	border-radius: var(--radius-m);
+}
+
+/* ============ Acquisition flow (missing list + purchases) ============ */
+
+/* One-word state of a missing line: to buy / on the way. */
+.tcgb-acq-state {
+	font-size: var(--font-ui-smaller);
+	padding: 1px var(--size-2-2);
+	border-radius: var(--radius-s);
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.tcgb-acq-state-buy {
+	color: var(--color-orange);
+	background: rgba(var(--color-orange-rgb, 233, 151, 63), 0.12);
+}
+
+.tcgb-acq-state-ordered {
+	color: var(--color-green);
+	background: rgba(var(--color-green-rgb), 0.12);
+}
+
+.tcgb-acq-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	flex-shrink: 0;
+}
+
+/* "Received 2× Liga" — one button per purchase in transit. */
+.tcgb-acq-receive {
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+
+/* Purchases on the way (dashboard) */
+.tcgb-purchases-summary {
+	display: flex;
+	gap: var(--size-4-4);
+	flex-wrap: wrap;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: var(--size-4-2);
+}
+
+.tcgb-purchase-card {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tcgb-purchase-deck {
+	font-size: var(--font-ui-smaller);
+	max-width: 10em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
