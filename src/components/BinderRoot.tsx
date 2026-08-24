@@ -12,6 +12,7 @@ import { useVaultVersion } from '../hooks/useVaultVersion'
 import { useAllocation } from '../hooks/useAllocation'
 import { PurchasesSection } from './PurchasesSection'
 import { layoutClasses, useLayoutMode } from '../hooks/useLayoutMode'
+import { functionalKey } from '../domain/text-match'
 import { CollectionView } from './CollectionView'
 import { DeckView } from './DeckView'
 import { PortfolioChart } from './PortfolioChart'
@@ -127,6 +128,16 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 	/** One allocation snapshot for the whole dashboard (missing counts, held copies, warnings). */
 	const allocation = useAllocation(plugin, cardIndex, version)
 	const { snapshot } = allocation
+
+	/** Functional key → a card note of that name, to give over-allocation rows a face. */
+	const metaByKey = useMemo(() => {
+		const map = new Map<string, CardMeta>()
+		for (const meta of cardIndex.values()) {
+			const key = functionalKey(meta.nameEn, meta.name, meta.cardId)
+			if (!map.has(key)) map.set(key, meta)
+		}
+		return map
+	}, [cardIndex])
 
 	const [query, setQuery] = useState('')
 	const searching = query.trim().length > 0
@@ -380,11 +391,56 @@ export function BinderRoot({ plugin }: BinderRootProps) {
 			)}
 
 			{snapshot.overAllocated.length > 0 && (
-				<div className="tcgb-panel tcgb-panel-warn">
-					{t('root.over-allocated', {
-						count: snapshot.overAllocated.reduce((sum, pool) => sum + pool.over, 0),
-					})}
-				</div>
+				<details className="tcgb-panel tcgb-panel-warn tcgb-over">
+					<summary className="tcgb-over-summary">
+						{t('root.over-allocated', {
+							count: snapshot.overAllocated.reduce((sum, pool) => sum + pool.over, 0),
+						})}
+					</summary>
+					<div className="tcgb-over-list">
+						{snapshot.overAllocated.map((pool) => {
+							const meta = metaByKey.get(pool.key) ?? null
+							return (
+								<div key={pool.key} className="tcgb-deck-row tcgb-over-row">
+									{meta?.image ? (
+										<img className="tcgb-thumb" loading="lazy" src={meta.image} alt="" />
+									) : (
+										<div className="tcgb-thumb tcgb-thumb-empty" />
+									)}
+									<div className="tcgb-deck-missing-name">
+										<a
+											className="tcgb-card-link"
+											onClick={() => {
+												if (meta) new CardDetailModal(app, plugin, [meta], 0).open()
+											}}
+										>
+											{meta?.name ?? pool.key}
+										</a>
+										<span className="tcgb-deck-missing-note">
+											{t('over.counts', { allocated: pool.allocated, owned: pool.owned })}
+										</span>
+									</div>
+									<span className="tcgb-over-decks">
+										{[...pool.heldBy.entries()].map(([path, held]) => {
+											const deck = decks.find((file) => file.path === path)
+											if (!deck) return null
+											return (
+												<button
+													key={path}
+													className="tcgb-btn tcgb-over-deck"
+													title={t('over.open-deck', { name: deck.basename })}
+													onClick={() => setSelected({ kind: 'deck', file: deck })}
+												>
+													{deck.basename} · {held}×
+												</button>
+											)
+										})}
+									</span>
+								</div>
+							)
+						})}
+					</div>
+				</details>
 			)}
 
 			{collections.length > 0 && (

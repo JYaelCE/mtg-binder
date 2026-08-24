@@ -2077,3 +2077,52 @@ button.tcgb-chip {
 .tcgb-chart {
 	touch-action: pan-y;
 }
+
+/* Over-allocation panel: expandable to name the cards and the decks holding them. */
+.tcgb-over-summary {
+	cursor: pointer;
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+}
+
+.tcgb-over-summary::before {
+	content: '▸';
+	color: var(--text-faint);
+	flex-shrink: 0;
+	transition: transform 150ms ease-out;
+}
+
+.tcgb-over[open] .tcgb-over-summary::before {
+	transform: rotate(90deg);
+}
+
+.tcgb-over-list {
+	margin-top: var(--size-4-2);
+}
+
+.tcgb-over-row {
+	flex-wrap: wrap;
+}
+
+.tcgb-over-decks {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-2-2);
+	margin-left: auto;
+}
+
+.tcgb-over-deck {
+	font-size: var(--font-ui-smaller);
+	max-width: 12em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tcgb-over-summary::before {
+		transition: none;
+	}
+}
