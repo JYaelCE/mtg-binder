@@ -273,17 +273,40 @@ export default class TcgBinderPlugin extends Plugin {
 		return probe
 	}
 
-	/** Waits until two probes 1.5s apart agree before migrating. */
-	private scheduleAllocationMigration(previousProbe = -1): void {
+	/**
+	 * Migrates only once the metadata cache is demonstrably done: after the
+	 * cache's own 'resolved' signal (initial scan drained; 8s fallback for
+	 * warm caches where it fired before we subscribed), and then only when
+	 * three probes 2s apart agree. A 2-probe/1.5s version shipped first and
+	 * still migrated against a half-loaded cache on a real NTFS vault —
+	 * cache population is bursty, so one quiet interval proves nothing.
+	 */
+	private scheduleAllocationMigration(): void {
 		if (this.settings.allocationModelVersion >= 1) return
-		const probe = this.migrationProbe()
-		if (probe === previousProbe) {
-			void this.migrateAllocationModel()
-			return
+		let last = -1
+		let stable = 0
+		const tick = () => {
+			const probe = this.migrationProbe()
+			stable = probe === last ? stable + 1 : 0
+			last = probe
+			if (stable >= 2) {
+				void this.migrateAllocationModel()
+				return
+			}
+			window.setTimeout(tick, 2000)
 		}
-		window.setTimeout(() => {
-			this.scheduleAllocationMigration(probe)
-		}, 1500)
+		let started = false
+		const start = () => {
+			if (started) return
+			started = true
+			tick()
+		}
+		const ref = this.app.metadataCache.on('resolved', () => {
+			this.app.metadataCache.offref(ref)
+			start()
+		})
+		this.registerEvent(ref)
+		window.setTimeout(start, 8000)
 	}
 
 	/**
