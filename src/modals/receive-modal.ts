@@ -25,6 +25,8 @@ export interface ReceiveOptions {
 	price: number | null
 	/** Decks offered for allocation; null hides the dropdown (deck context is implicit). */
 	decks: TFile[] | null
+	/** Collection matching the card's type — pre-selected over the sticky default. */
+	preferredCollection?: TFile | null
 }
 
 /**
@@ -63,7 +65,11 @@ export class ReceiveModal extends Modal {
 		previewEl.createDiv({ cls: 'tcgb-suggestion-meta', text: this.preview.metaLine })
 
 		let collection =
-			this.collections.find((f) => f.path === entryDefaults.collectionPath) ?? this.collections[0]
+			(options.preferredCollection && this.collections.includes(options.preferredCollection)
+				? options.preferredCollection
+				: null) ??
+			this.collections.find((f) => f.path === entryDefaults.collectionPath) ??
+			this.collections[0]
 		let quantity = options.max
 		let variant = entryDefaults.variant
 		let condition = entryDefaults.condition

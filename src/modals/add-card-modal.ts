@@ -25,6 +25,13 @@ export interface AddCardOptions {
 	initialQuantity?: number
 	/** Show the "keep searching" toggle (default true — the search loop). */
 	showKeepSearching?: boolean
+	/**
+	 * Resolves the collection that matches the card's TYPE (e.g. a Lightning
+	 * Pokémon → "Lightning Pokémon"). Async because the type may need one
+	 * fetch; the dropdown pre-selects the result unless the user already
+	 * chose a collection themselves.
+	 */
+	inferCollection?: () => Promise<TFile | null>
 }
 
 export function previewFromCardData(card: CardData): CardPreview {
@@ -72,14 +79,26 @@ export class AddCardModal extends Modal {
 		let condition = entryDefaults.condition
 		let keepSearching = showKeepSearching && AddCardModal.lastKeepSearching
 
+		let collectionTouched = false
 		new Setting(contentEl).setName(t('add.collection')).addDropdown((dd) => {
 			this.collections.forEach((file, i) => {
 				dd.addOption(String(i), file.basename)
 			})
 			dd.setValue(String(this.collections.indexOf(collection)))
 			dd.onChange((value) => {
+				collectionTouched = true
 				collection = this.collections[Number(value)]
 			})
+			if (this.options.inferCollection) {
+				void this.options.inferCollection().then((target) => {
+					// The user's own choice always wins over the inference.
+					if (!target || collectionTouched) return
+					const index = this.collections.indexOf(target)
+					if (index < 0) return
+					collection = target
+					dd.setValue(String(index))
+				})
+			}
 		})
 
 		new Setting(contentEl).setName(t('add.quantity')).addText((text) => {

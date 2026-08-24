@@ -42,6 +42,7 @@ import type { CardCondition, CardVariant } from './types'
 import { ReceiveModal } from './modals/receive-modal'
 import type { DeckOrder, DeckStoredEntry } from './services/deck-store'
 import { bucketFor, TypeBucket } from './domain/type-buckets'
+import type { BucketCard } from './domain/type-buckets'
 import { parseCsv } from './domain/csv'
 import { CsvCardRow, mapCsvRows } from './domain/csv-import'
 import { t } from './i18n'
@@ -451,29 +452,40 @@ export default class TcgBinderPlugin extends Plugin {
 	/** Search → configure → add, looping while "keep searching" is on. */
 	private runAddCardsLoop(collections: TFile[]): void {
 		new CardSearchModal(this.app, this.activeSource(), this.setCatalog, this.settings.defaultViewMode, (card) => {
-			new AddCardModal(this.app, previewFromCardData(card), collections, (choice) => {
-				void (async () => {
-					try {
-						const cardFile = await this.ensureHydratedCardNote(card)
-						await this.collections.addEntry(
-							choice.collection,
-							card.id,
-							`[[${cardFile.basename}]]`,
-							choice.quantity,
-							choice.variant,
-							choice.condition,
-						)
-						new Notice(t('notice.card-added', { name: card.name }))
-					} catch (error) {
-						new Notice(String(error))
-					}
-					if (choice.keepSearching) {
-						// Let the previous modal finish closing before reopening the
-						// search — opening mid-close breaks focus/keyboard scope.
-						window.setTimeout(() => this.runAddCardsLoop(collections), 80)
-					}
-				})()
-			}).open()
+			new AddCardModal(
+				this.app,
+				previewFromCardData(card),
+				collections,
+				(choice) => {
+					void (async () => {
+						try {
+							const cardFile = await this.ensureHydratedCardNote(card)
+							await this.collections.addEntry(
+								choice.collection,
+								card.id,
+								`[[${cardFile.basename}]]`,
+								choice.quantity,
+								choice.variant,
+								choice.condition,
+							)
+							new Notice(t('notice.card-added', { name: card.name }))
+						} catch (error) {
+							new Notice(String(error))
+						}
+						if (choice.keepSearching) {
+							// Let the previous modal finish closing before reopening the
+							// search — opening mid-close breaks focus/keyboard scope.
+							window.setTimeout(() => this.runAddCardsLoop(collections), 80)
+						}
+					})()
+				},
+				{
+					inferCollection: async () => {
+						const probe = await this.searchCardBucket(card)
+						return probe ? this.inferCollectionFor(probe, collections) : null
+					},
+				},
+			).open()
 		}).open()
 	}
 
@@ -918,7 +930,13 @@ export default class TcgBinderPlugin extends Plugin {
 			this.app,
 			this.cardPreview(meta),
 			targets,
-			{ from: order.from, max: order.qty, price: order.price, decks: null },
+			{
+				from: order.from,
+				max: order.qty,
+				price: order.price,
+				decks: null,
+				preferredCollection: this.inferCollectionFor(meta, targets),
+			},
 			(choice) => {
 				void (async () => {
 					try {
@@ -980,7 +998,7 @@ export default class TcgBinderPlugin extends Plugin {
 			this.app,
 			this.cardPreview(meta),
 			targets,
-			{ from: '', max: remainder, price: null, decks: null },
+			{ from: '', max: remainder, price: null, decks: null, preferredCollection: this.inferCollectionFor(meta, targets) },
 			(choice) => {
 				void (async () => {
 					try {
@@ -1028,7 +1046,13 @@ export default class TcgBinderPlugin extends Plugin {
 			this.app,
 			preview,
 			targets,
-			{ from: '', max: Math.max(1, row.qty), price: null, decks: decks.length > 0 ? decks : null },
+			{
+				from: '',
+				max: Math.max(1, row.qty),
+				price: null,
+				decks: decks.length > 0 ? decks : null,
+				preferredCollection: meta ? this.inferCollectionFor(meta, targets) : null,
+			},
 			(choice) => {
 				void (async () => {
 					try {
@@ -1483,6 +1507,59 @@ export default class TcgBinderPlugin extends Plugin {
 			}
 		}
 		return stamped
+	}
+
+	/**
+	 * The existing collection whose name matches the card's type bucket —
+	 * the same names the split-by-type feature creates ("Items", "Fire
+	 * Pokémon", ...). Never creates a collection; a per-type Pokémon bucket
+	 * falls back to a plain "Pokémon" collection. Null when the user does
+	 * not organize by type.
+	 */
+	inferCollectionFor(card: BucketCard, collections: TFile[]): TFile | null {
+		const bucket = bucketFor(card)
+		if (!bucket) return null
+		const names = [this.bucketName(bucket)]
+		if (bucket.startsWith('pokemon-')) names.push(this.bucketName('pokemon'))
+		for (const name of names) {
+			const target = collections.find((file) => file.basename.toLowerCase() === name.toLowerCase())
+			if (target) return target
+		}
+		return null
+	}
+
+	/**
+	 * Bucket of a card coming from SEARCH results: the local note knows the
+	 * type; otherwise the search payload; otherwise one full fetch (TCGdex
+	 * search returns resumes without supertype/types).
+	 */
+	private async searchCardBucket(card: CardData): Promise<BucketCard | null> {
+		const usable = (probe: BucketCard | null): BucketCard | null => {
+			if (!probe || !probe.supertype) return null
+			// A Pokémon without energy types only yields the generic bucket —
+			// worth one fetch to aim at the per-type collection instead.
+			if (probe.supertype === 'Pokémon' && (probe.types?.length ?? 0) === 0) return null
+			return probe
+		}
+		const meta = this.cardNotes.buildIndex().get(card.id)
+		const fromNote = usable(meta ?? null)
+		if (fromNote) return fromNote
+		const asBucketCard = (data: CardData): BucketCard => ({
+			supertype: data.supertype || null,
+			subtypes: data.subtypes,
+			types: data.details?.types ?? null,
+			name: data.name,
+			nameEn: data.nameEn,
+		})
+		const fromPayload = usable(asBucketCard(card))
+		if (fromPayload) return fromPayload
+		try {
+			const full = await this.activeSource().getCard(card.id)
+			return full ? asBucketCard(full) : (meta ?? null)
+		} catch (error) {
+			console.debug('[TCG Binder] type inference fetch failed', error)
+			return meta ?? null
+		}
 	}
 
 	/**
