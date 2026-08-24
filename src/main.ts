@@ -235,7 +235,7 @@ export default class TcgBinderPlugin extends Plugin {
 
 		// Frontmatter is only readable once the metadata cache is populated.
 		this.app.workspace.onLayoutReady(() => {
-			void this.migrateAllocationModel()
+			this.scheduleAllocationMigration()
 		})
 
 		// Version marker — makes stale-bundle situations obvious when debugging.
@@ -254,6 +254,35 @@ export default class TcgBinderPlugin extends Plugin {
 		const data = (await this.loadData()) as Record<string, unknown> | null
 		this.loadedData = data ?? {}
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<TcgBinderSettings> | null)
+	}
+
+	/**
+	 * A number that stops changing once the metadata cache has finished
+	 * indexing the binder: notes seen plus entry lines parsed. On a cold
+	 * start the cache can still be indexing well after layout-ready — a
+	 * migration reading frontmatter too early sees half a vault and
+	 * under-allocates (found against a real vault, 2026-08-23).
+	 */
+	private migrationProbe(): number {
+		let probe = this.cardNotes.buildIndex().size
+		for (const deck of this.store.listFiles('deck')) probe += 1 + this.decks.readEntries(deck).length
+		for (const collection of this.store.listFiles('collection')) {
+			probe += 1 + this.collections.readEntries(collection).length
+		}
+		return probe
+	}
+
+	/** Waits until two probes 1.5s apart agree before migrating. */
+	private scheduleAllocationMigration(previousProbe = -1): void {
+		if (this.settings.allocationModelVersion >= 1) return
+		const probe = this.migrationProbe()
+		if (probe === previousProbe) {
+			void this.migrateAllocationModel()
+			return
+		}
+		window.setTimeout(() => {
+			this.scheduleAllocationMigration(probe)
+		}, 1500)
 	}
 
 	/**
