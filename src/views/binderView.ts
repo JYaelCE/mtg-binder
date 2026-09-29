@@ -2,7 +2,8 @@ import { ItemView, WorkspaceLeaf, TFile, normalizePath, App, Modal, Setting, Not
 import MTGBinderPlugin from '../main';
 import { CardDetailModal } from './cardDetailModal';
 import { AddCardModal } from './addCardModal';
-import { DeckListModal } from './deckModal';
+import { DeckCreateModal } from './deckModal';
+import { DeckCalculator } from '../utils/deckCalculator';
 
 export const VIEW_TYPE_MTG_BINDER = 'mtg-binder-view';
 
@@ -67,7 +68,8 @@ export class MTGBinderView extends ItemView {
     currentSelectedColors: string[] = ['all'];
     currentSortBy: string = 'name-asc';
     activeCollectionName: string = 'Todas las cartas';
-    activeStatusFilter: 'all' | 'owned' | 'wishlist' = 'all';
+    activeStatusFilter: 'all' | 'owned' | 'wishlist' | 'decks' = 'all';
+    selectedDeckFile: TFile | null = null; // NUEVO: Controla qué mazo se está visualizando en detalle
 
     constructor(leaf: WorkspaceLeaf, plugin: MTGBinderPlugin) {
         super(leaf);
@@ -89,6 +91,25 @@ export class MTGBinderView extends ItemView {
         const header = container.createDiv({ cls: 'mtg-binder-header' });
         
         const topHeader = header.createDiv({ cls: 'mtg-binder-top-row' });
+
+        // Si estamos viendo el detalle de un mazo, mostramos el botón de regresar y el título del mazo
+        if (this.selectedDeckFile) {
+            const cache = this.app.metadataCache.getFileCache(this.selectedDeckFile);
+            const deckName = cache?.frontmatter?.deck_name || this.selectedDeckFile.basename;
+            
+            const backBtn = topHeader.createEl('button', { text: '← Volver a Decks', cls: 'mtg-collection-btn' });
+            backBtn.onclick = () => {
+                this.selectedDeckFile = null;
+                this.renderBinder();
+            };
+
+            topHeader.createEl('h2', { text: `Mazo: ${deckName}` });
+            
+            const deckContentContainer = container.createDiv({ cls: 'mtg-binder-deck-detail-main' });
+            await this.renderDeckDetailInView(deckContentContainer, this.selectedDeckFile);
+            return;
+        }
+
         topHeader.createEl('h2', { text: 'Mi Carpeta de Colección' });
 
         const controls = topHeader.createDiv({ cls: 'mtg-binder-controls' });
@@ -98,10 +119,12 @@ export class MTGBinderView extends ItemView {
             new AddCardModal(this.app, this.plugin).open();
         });
 
-        const decksBtn = controls.createEl('button', { text: '📦 Ver Decks', cls: 'mtg-collection-btn' });
-        decksBtn.onclick = () => {
-            new DeckListModal(this.app, this.plugin).open();
-        };
+        if (this.activeStatusFilter === 'decks') {
+            const createDeckBtn = controls.createEl('button', { text: '+ Crear Mazo', cls: 'mod-cta' });
+            createDeckBtn.onclick = () => {
+                new DeckCreateModal(this.app, this.plugin).open();
+            };
+        }
 
         const searchInput = controls.createEl('input', {
             type: 'text',
@@ -109,6 +132,10 @@ export class MTGBinderView extends ItemView {
             cls: 'mtg-binder-search-input'
         });
         searchInput.value = this.currentSearchQuery;
+        if (this.activeStatusFilter === 'decks') {
+            searchInput.disabled = true;
+            searchInput.placeholder = 'Filtro no disponible en Decks';
+        }
 
         const sortSelect = controls.createEl('select', { cls: 'mtg-binder-sort-select' });
         const sortOptions = [
@@ -125,23 +152,26 @@ export class MTGBinderView extends ItemView {
             if (opt.value === this.currentSortBy) option.selected = true;
         });
 
-        const toggleButton = controls.createEl('button', { 
-            text: this.currentViewMode === 'grid' ? 'Cambiar a Vista Lista' : 'Cambiar a Vista Grid',
-            cls: 'mtg-collection-btn'
-        });
+        if (this.activeStatusFilter !== 'decks') {
+            const toggleButton = controls.createEl('button', { 
+                text: this.currentViewMode === 'grid' ? 'Cambiar a Vista Lista' : 'Cambiar a Vista Grid',
+                cls: 'mtg-collection-btn'
+            });
 
-        toggleButton.addEventListener('click', () => {
-            this.currentViewMode = this.currentViewMode === 'grid' ? 'list' : 'grid';
-            this.renderBinder();
-        });
+            toggleButton.addEventListener('click', () => {
+                this.currentViewMode = this.currentViewMode === 'grid' ? 'list' : 'grid';
+                this.renderBinder();
+            });
+        }
 
         const statusFilterBar = header.createDiv({ cls: 'mtg-binder-collection-bar' });
-        statusFilterBar.createSpan({ text: 'Estado:', cls: 'mtg-collection-label' });
+        statusFilterBar.createSpan({ text: 'Vista:', cls: 'mtg-collection-label' });
 
         const statusOptions = [
-            { id: 'all', label: 'Todos' },
+            { id: 'all', label: 'Todas' },
             { id: 'owned', label: 'Poseídas' },
-            { id: 'wishlist', label: 'Wishlist' }
+            { id: 'wishlist', label: 'Wishlist' },
+            { id: 'decks', label: '📦 Decks' }
         ];
 
         statusOptions.forEach(st => {
@@ -155,6 +185,12 @@ export class MTGBinderView extends ItemView {
                 this.renderBinder();
             });
         });
+
+        if (this.activeStatusFilter === 'decks') {
+            const decksContainer = container.createDiv({ cls: 'mtg-binder-decks-main-container' });
+            await this.renderDecksInView(decksContainer);
+            return;
+        }
 
         const collectionBar = header.createDiv({ cls: 'mtg-binder-collection-bar' });
         collectionBar.createSpan({ text: 'Colecciones:', cls: 'mtg-collection-label' });
@@ -362,7 +398,7 @@ export class MTGBinderView extends ItemView {
                     case 'price-desc':
                         return (Number(fmNodeB.prices?.usd) || 0) - (Number(fmNodeA.prices?.usd) || 0);
                     case 'price-asc':
-                        return (Number(fmNodeA.prices?.usd) || 0) - (Number(fmNodeA.prices?.usd) || 0);
+                        return (Number(fmNodeA.prices?.usd) || 0) - (Number(fmNodeB.prices?.usd) || 0);
                     default:
                         return 0;
                 }
@@ -397,6 +433,93 @@ export class MTGBinderView extends ItemView {
         });
 
         processAndRender();
+    }
+
+    async renderDecksInView(container: HTMLElement) {
+        container.empty();
+        const files = this.app.vault.getMarkdownFiles();
+        let deckFiles: TFile[] = [];
+
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            const fm = cache?.frontmatter;
+            if (fm && fm['tcg-binder'] === 'mtg-deck') {
+                deckFiles.push(file);
+            }
+        }
+
+        if (deckFiles.length === 0) {
+            const emptyEl = container.createDiv({ cls: 'mtg-binder-empty' });
+            emptyEl.createEl('p', { text: 'No tienes ningún mazo creado todavía.' });
+            const createBtn = emptyEl.createEl('button', { text: '+ Crear tu primer mazo', cls: 'mod-cta' });
+            createBtn.onclick = () => {
+                new DeckCreateModal(this.app, this.plugin).open();
+            };
+            return;
+        }
+
+        const listContainer = container.createDiv({ cls: 'mtg-deck-list-container' });
+
+        deckFiles.forEach(file => {
+            const cache = this.app.metadataCache.getFileCache(file);
+            const fm = cache?.frontmatter || {};
+            const deckName = fm.deck_name || file.basename;
+            const format = fm.format || 'Casual';
+            const cards = Array.isArray(fm.cards) ? fm.cards : [];
+
+            const deckCardEl = listContainer.createDiv({ cls: 'mtg-deck-item-card' });
+            
+            const infoDiv = deckCardEl.createDiv();
+            infoDiv.createEl('h3', { text: deckName, cls: 'mtg-deck-title' });
+            infoDiv.createEl('p', { text: `Formato: ${format} • Total de cartas: ${cards.reduce((acc: number, c: any) => acc + (Number(c.count) || 1), 0)}`, cls: 'mtg-deck-subtitle' });
+
+            const btnContainer = deckCardEl.createDiv({ cls: 'mtg-deck-btn-container' });
+            const viewBtn = btnContainer.createEl('button', { text: 'Ver Detalle', cls: 'mod-cta' });
+            
+            // Al hacer clic, asignamos el mazo seleccionado y renderizamos de nuevo la vista en modo detalle
+            viewBtn.onclick = () => {
+                this.selectedDeckFile = file;
+                this.renderBinder();
+            };
+        });
+    }
+
+    async renderDeckDetailInView(container: HTMLElement, file: TFile) {
+        container.empty();
+        const cache = this.app.metadataCache.getFileCache(file);
+        const fm = cache?.frontmatter || {};
+        const format = fm.format || 'Casual';
+        const cards = Array.isArray(fm.cards) ? fm.cards : [];
+
+        container.createEl('p', { text: `Formato: ${format}`, cls: 'setting-item-description' });
+
+        const calculator = new DeckCalculator(this.app, this.plugin.settings);
+        const deficits = await calculator.getInventoryDeficits();
+
+        const listContainer = container.createDiv({ cls: 'mtg-deck-cards-container' });
+        
+        if (cards.length === 0) {
+            listContainer.createDiv({ text: 'Este mazo aún no tiene cartas registradas.', cls: 'mtg-binder-empty' });
+            return;
+        }
+
+        cards.forEach((card: any) => {
+            const row = listContainer.createDiv({ cls: 'mtg-deck-card-row' });
+            row.createSpan({ text: `${card.count}x `, cls: 'mtg-deck-card-count' });
+            row.createSpan({ text: card.name, cls: 'mtg-deck-card-name' });
+            row.createSpan({ text: `(${card.set_code?.toUpperCase()})`, cls: 'mtg-deck-card-set' });
+
+            const uniqueKey = `${card.set_code}_${card.collector_number}`.toLowerCase();
+            const deficitInfo = deficits.find(d => `${d.setCode}_${d.collectorNumber}`.toLowerCase() === uniqueKey);
+
+            if (deficitInfo) {
+                const warningTag = row.createSpan({ cls: 'mtg-deck-deficit-badge' });
+                warningTag.setText(`⚠️ Faltan ${deficitInfo.deficit} (Tienes ${deficitInfo.ownedCount}/${deficitInfo.totalDemand})`);
+            } else {
+                const okTag = row.createSpan({ cls: 'mtg-deck-ok-badge' });
+                okTag.setText('✓ Stock OK');
+            }
+        });
     }
 
     private renderGridItem(parent: HTMLElement, file: TFile, frontmatter: any) {

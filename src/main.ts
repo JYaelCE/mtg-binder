@@ -2,6 +2,7 @@ import { Plugin, Notice, PluginSettingTab, Setting, App, normalizePath } from 'o
 import { MTGBinderView, VIEW_TYPE_MTG_BINDER } from './views/binderView';
 import { ImportModal } from './views/importModal';
 import { AddCardModal } from './views/addCardModal';
+import { DeckCreateModal } from './views/deckModal';
 
 interface CollectionSetting {
     name: string;
@@ -25,7 +26,7 @@ export default class MTGBinderPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
-        // Registrar la vista del Binder (Cuadrícula / Lista)
+        // Registrar la vista del Binder (Cuadrícula / Lista / Decks integrados)
         this.registerView(
             VIEW_TYPE_MTG_BINDER,
             (leaf) => new MTGBinderView(leaf, this)
@@ -59,6 +60,13 @@ export default class MTGBinderPlugin extends Plugin {
             id: 'update-mtg-binder-prices',
             name: 'Actualizar precios de todas las cartas del Binder',
             callback: () => { this.updateAllPrices(); }
+        });
+
+        // Comando rápido para crear un nuevo Mazo
+        this.addCommand({
+            id: 'mtg-create-deck',
+            name: 'Crear nuevo Mazo',
+            callback: () => { new DeckCreateModal(this.app, this).open(); }
         });
 
         this.addSettingTab(new MTGBinderSettingTab(this.app, this));
