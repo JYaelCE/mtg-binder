@@ -1,0 +1,248 @@
+import { App, Modal, TFile, normalizePath, Notice, Setting } from 'obsidian';
+import MTGBinderPlugin from '../main';
+import { DeckCalculator } from '../utils/deckCalculator';
+
+export class DeckListModal extends Modal {
+    plugin: MTGBinderPlugin;
+
+    constructor(app: App, plugin: MTGBinderPlugin) {
+        super(app);
+        this.plugin = plugin;
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('mtg-card-modal');
+
+        const headerDiv = contentEl.createDiv({ cls: 'mtg-deck-list-header' });
+        headerDiv.createEl('h2', { text: 'Tus Decks (Mazos)' });
+        
+        const createBtn = headerDiv.createEl('button', { text: '+ Crear Nuevo Mazo', cls: 'mod-cta' });
+        createBtn.onclick = () => {
+            this.close();
+            new DeckCreateModal(this.app, this.plugin).open();
+        };
+
+        contentEl.createEl('p', { 
+            text: 'Lista de mazos registrados en tu bóveda y control de cartas necesarias frente a tu inventario físico.',
+            cls: 'setting-item-description'
+        });
+
+        const decksContainer = contentEl.createDiv({ cls: 'mtg-deck-list-container' });
+        await this.renderDecks(decksContainer);
+    }
+
+    async renderDecks(container: HTMLElement) {
+        container.empty();
+        const files = this.app.vault.getMarkdownFiles();
+        let deckFiles: TFile[] = [];
+
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            const fm = cache?.frontmatter;
+            if (fm && fm['tcg-binder'] === 'mtg-deck') {
+                deckFiles.push(file);
+            }
+        }
+
+        if (deckFiles.length === 0) {
+            container.createDiv({ text: 'No tienes ningún mazo creado todavía.', cls: 'mtg-binder-empty' });
+            return;
+        }
+
+        const calculator = new DeckCalculator(this.app, this.plugin.settings);
+        const deficits = await calculator.getInventoryDeficits();
+
+        deckFiles.forEach(file => {
+            const cache = this.app.metadataCache.getFileCache(file);
+            const fm = cache?.frontmatter || {};
+            const deckName = fm.deck_name || file.basename;
+            const format = fm.format || 'Casual';
+            const cards = Array.isArray(fm.cards) ? fm.cards : [];
+
+            const deckCardEl = container.createDiv({ cls: 'mtg-deck-item-card' });
+            
+            const infoDiv = deckCardEl.createDiv();
+            infoDiv.createEl('h3', { text: deckName, cls: 'mtg-deck-title' });
+            infoDiv.createEl('p', { text: `Formato: ${format} • Total de cartas: ${cards.reduce((acc: number, c: any) => acc + (Number(c.count) || 1), 0)}`, cls: 'mtg-deck-subtitle' });
+
+            const btnContainer = deckCardEl.createDiv({ cls: 'mtg-deck-btn-container' });
+            const viewBtn = btnContainer.createEl('button', { text: 'Ver Mazo', cls: 'mod-cta' });
+            
+            viewBtn.onclick = () => {
+                this.close();
+                new DeckDetailModal(this.app, this.plugin, file).open();
+            };
+        });
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
+    }
+}
+
+export class DeckCreateModal extends Modal {
+    plugin: MTGBinderPlugin;
+    deckName: string = '';
+    deckFormat: string = 'Commander';
+
+    constructor(app: App, plugin: MTGBinderPlugin) {
+        super(app);
+        this.plugin = plugin;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('mtg-card-modal');
+
+        contentEl.createEl('h2', { text: 'Crear Nuevo Mazo' });
+
+        new Setting(contentEl)
+            .setName('Nombre del mazo')
+            .addText(text => text
+                .setPlaceholder('Ej: Control Dimir')
+                .onChange(val => this.deckName = val));
+
+        new Setting(contentEl)
+            .setName('Formato')
+            .addDropdown(dropdown => dropdown
+                .addOption('Commander', 'Commander')
+                .addOption('Modern', 'Modern')
+                .addOption('Standard', 'Standard')
+                .addOption('Pioneer', 'Pioneer')
+                .addOption('Casual', 'Casual')
+                .setValue('Commander')
+                .onChange(val => this.deckFormat = val));
+
+        new Setting(contentEl)
+            .addButton(btn => btn
+                .setButtonText('Crear Mazo')
+                .setCta()
+                .onClick(async () => {
+                    if (!this.deckName.trim()) {
+                        new Notice('Por favor, ingresa un nombre válido para el mazo.');
+                        return;
+                    }
+                    await this.createDeckFile();
+                    this.close();
+                }));
+    }
+
+    async createDeckFile() {
+        const folderPath = normalizePath('MTG Binder/Decks');
+        
+        // Crear carpeta si no existe
+        const folders = folderPath.split('/');
+        let currentPath = '';
+        for (const folder of folders) {
+            currentPath = currentPath ? `${currentPath}/${folder}` : folder;
+            if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+                await this.app.vault.createFolder(currentPath);
+            }
+        }
+
+        const sanitizedName = this.deckName.replace(/[/\\?%*:|"<>]/g, '-');
+        const fileName = `${folderPath}/${sanitizedName}.md`;
+
+        const fileContent = `---
+tcg-binder: mtg-deck
+deck_name: "${this.deckName.trim()}"
+format: "${this.deckFormat}"
+cards: []
+---
+
+# ${this.deckName.trim()}
+
+## Cartas del Mazo
+`;
+
+        const existingFile = this.app.vault.getAbstractFileByPath(fileName);
+        if (existingFile) {
+            new Notice('Ya existe un mazo con ese nombre.');
+            return;
+        }
+
+        await this.app.vault.create(fileName, fileContent);
+        new Notice(`¡Mazo "${this.deckName}" creado con éxito!`);
+        
+        // Abrir el detalle del nuevo mazo
+        const newFile = this.app.vault.getAbstractFileByPath(fileName);
+        if (newFile instanceof TFile) {
+            new DeckDetailModal(this.app, this.plugin, newFile).open();
+        }
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
+    }
+}
+
+export class DeckDetailModal extends Modal {
+    plugin: MTGBinderPlugin;
+    file: TFile;
+
+    constructor(app: App, plugin: MTGBinderPlugin, file: TFile) {
+        super(app);
+        this.plugin = plugin;
+        this.file = file;
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('mtg-card-modal');
+
+        const cache = this.app.metadataCache.getFileCache(this.file);
+        const fm = cache?.frontmatter || {};
+        const deckName = fm.deck_name || this.file.basename;
+        const cards = Array.isArray(fm.cards) ? fm.cards : [];
+
+        const headerRow = contentEl.createDiv({ cls: 'mtg-deck-detail-header' });
+        headerRow.createEl('h2', { text: deckName });
+        
+        const backBtn = headerRow.createEl('button', { text: '← Volver a Decks', cls: 'mtg-collection-btn' });
+        backBtn.onclick = () => {
+            this.close();
+            new DeckListModal(this.app, this.plugin).open();
+        };
+
+        contentEl.createEl('p', { text: `Formato: ${fm.format || 'Casual'}`, cls: 'setting-item-description' });
+
+        const calculator = new DeckCalculator(this.app, this.plugin.settings);
+        const deficits = await calculator.getInventoryDeficits();
+
+        const listContainer = contentEl.createDiv({ cls: 'mtg-deck-cards-container' });
+        
+        if (cards.length === 0) {
+            listContainer.createDiv({ text: 'Este mazo aún no tiene cartas registradas en su Frontmatter.', cls: 'mtg-binder-empty' });
+            return;
+        }
+
+        cards.forEach((card: any) => {
+            const row = listContainer.createDiv({ cls: 'mtg-deck-card-row' });
+            row.createSpan({ text: `${card.count}x `, cls: 'mtg-deck-card-count' });
+            row.createSpan({ text: card.name, cls: 'mtg-deck-card-name' });
+            row.createSpan({ text: `(${card.set_code?.toUpperCase()})`, cls: 'mtg-deck-card-set' });
+
+            const uniqueKey = `${card.set_code}_${card.collector_number}`.toLowerCase();
+            const deficitInfo = deficits.find(d => `${d.setCode}_${d.collectorNumber}`.toLowerCase() === uniqueKey);
+
+            if (deficitInfo) {
+                const warningTag = row.createSpan({ cls: 'mtg-deck-deficit-badge' });
+                warningTag.setText(`⚠️ Faltan ${deficitInfo.deficit} (Tienes ${deficitInfo.ownedCount}/${deficitInfo.totalDemand})`);
+            } else {
+                const okTag = row.createSpan({ cls: 'mtg-deck-ok-badge' });
+                okTag.setText('✓ Stock OK');
+            }
+        });
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
+    }
+}

@@ -1,10 +1,9 @@
 {
-	"id": "tcg-binder",
-	"name": "TCG Binder",
-	"version": "1.23.0",
-	"minAppVersion": "1.8.7",
-	"description": "Track your Pokémon TCG collection, build decks and browse cards inside your vault.",
-	"author": "bgarciamoura",
-	"authorUrl": "https://github.com/bgarciamoura",
+	"id": "obsidian-mtg-binder",
+	"name": "MTG Binder",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Visualiza y gestiona tu colección y mazos de Magic: The Gathering en Obsidian utilizando la API de Scryfall.",
+	"author": "jyaelce",
 	"isDesktopOnly": false
 }
